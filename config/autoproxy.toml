@@ -1,0 +1,32 @@
+http = "127.0.0.1:8000"
+mmdb = "Country.mmdb"
+proxy = "127.0.0.1:8888"
+
+[[rules]]
+type = "IpNet"
+ipnet = "127.0.0.0/8"
+rule = "Direct"
+
+[[rules]]
+type = "IpNet"
+ipnet = "10.0.0.0/8"
+rule = "Direct"
+
+[[rules]]
+type = "DomainKeyword"
+keyword = "icloud"
+rule = "Direct"
+
+[[rules]]
+type = "DomainKeyword"
+keyword = "apple"
+rule = "Direct"
+
+[[rules]]
+type = "GeoIp"
+country = "CN"
+rule = "Direct"
+
+[[rules]]
+type = "Direct"
+rule = "Proxy"
