@@ -26,7 +26,7 @@ struct Config {
 fn main() {
     let mut args = env::args();
     if args.len() != 2 {
-        println!("{} config.toml", args.nth(0).unwrap());
+        println!("Usage: {} config.toml", args.nth(0).unwrap());
         return;
     }
 

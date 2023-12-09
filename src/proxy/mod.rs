@@ -92,7 +92,7 @@ impl Connection {
 
     async fn apply_proxy_rules(&self, host: &String) -> bool {
         for rule in self.rules.iter() {
-            match rule.find_proxy_rule(host.clone()).await {
+            match rule.find_proxy_rule(host).await {
                 RuleResult::Proxy => return true,
                 RuleResult::Direct => return false,
                 RuleResult::NotFound => {}

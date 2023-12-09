@@ -18,7 +18,7 @@ pub enum RuleResult {
 
 #[async_trait]
 pub trait Rule: Sync + Send {
-    async fn find_proxy_rule(&self, host: String) -> RuleResult;
+    async fn find_proxy_rule(&self, host: &String) -> RuleResult;
 }
 
 pub struct DirectRule {
@@ -33,7 +33,7 @@ impl DirectRule {
 
 #[async_trait]
 impl Rule for DirectRule {
-    async fn find_proxy_rule(&self, _: String) -> RuleResult {
+    async fn find_proxy_rule(&self, _: &String) -> RuleResult {
         self.rule
     }
 }
@@ -52,7 +52,7 @@ impl IpNetRule {
 
 #[async_trait]
 impl Rule for IpNetRule {
-    async fn find_proxy_rule(&self, host: String) -> RuleResult {
+    async fn find_proxy_rule(&self, host: &String) -> RuleResult {
         match host.parse::<SocketAddr>() {
             Ok(addr) => {
                 if self.net.contains(&addr.ip()) {
@@ -79,7 +79,7 @@ impl DomainKeywordRule {
 
 #[async_trait]
 impl Rule for DomainKeywordRule {
-    async fn find_proxy_rule(&self, host: String) -> RuleResult {
+    async fn find_proxy_rule(&self, host: &String) -> RuleResult {
         if host.contains(&self.keyword) {
             self.rule
         } else {
@@ -104,7 +104,7 @@ impl GeoIpRule {
         }
     }
 
-    async fn need_to_proxy(&self, host: String) -> std::io::Result<RuleResult> {
+    async fn need_to_proxy(&self, host: &String) -> std::io::Result<RuleResult> {
         let addrs = net::lookup_host(host).await?;
 
         for addr in addrs {
@@ -127,7 +127,7 @@ impl GeoIpRule {
 
 #[async_trait]
 impl Rule for GeoIpRule {
-    async fn find_proxy_rule(&self, host: String) -> RuleResult {
+    async fn find_proxy_rule(&self, host: &String) -> RuleResult {
         self.need_to_proxy(host)
             .await
             .unwrap_or(RuleResult::NotFound)
