@@ -1,43 +1,64 @@
 mod http;
+mod socks5;
 
 use std::sync::Arc;
 
 use crate::rule::{Rule, RuleResult};
+use futures::stream::StreamExt;
 use http::{HttpAccept, HttpProxy};
+use socks5::{Socks5Accept, Socks5Proxy};
 use tokio::{
     io::{copy_bidirectional, AsyncWriteExt},
     net::{TcpListener, TcpStream},
 };
 
 pub struct AutoProxy {
-    listener: TcpListener,
+    http_listener: TcpListener,
+    socks5_listener: TcpListener,
     rules: Arc<Vec<Box<dyn Rule>>>,
     proxy: String,
+    http_port: u16,
 }
 
 impl AutoProxy {
     pub async fn listen(
-        address: &str,
+        http: &str,
+        socks5: &str,
         rules: Arc<Vec<Box<dyn Rule>>>,
         proxy: String,
     ) -> std::io::Result<Self> {
-        let listener = TcpListener::bind(address).await?;
+        let http_listener = TcpListener::bind(http).await?;
+        let socks5_listener = TcpListener::bind(socks5).await?;
+        let http_port = http_listener.local_addr().unwrap().port();
         Ok(Self {
-            listener,
+            http_listener,
+            socks5_listener,
             rules,
             proxy,
+            http_port,
         })
     }
 
-    pub async fn run(&self) {
-        loop {
-            match self.listener.accept().await {
-                Ok((stream, _)) => {
+    pub async fn run(self) {
+        let mut listener = futures::stream::select(
+            tokio_stream::wrappers::TcpListenerStream::new(self.http_listener),
+            tokio_stream::wrappers::TcpListenerStream::new(self.socks5_listener),
+        );
+
+        while let Some(stream) = listener.next().await {
+            match stream {
+                Ok(stream) => {
                     let rules = self.rules.clone();
                     let proxy = self.proxy.clone();
+                    let http_conn = stream.local_addr().unwrap().port() == self.http_port;
+
                     tokio::spawn(async move {
                         let mut conn = Connection::new(stream, rules, proxy);
-                        let _ = conn.run().await;
+                        if http_conn {
+                            let _ = conn.run_http_proxy().await;
+                        } else {
+                            let _ = conn.run_socks5_proxy().await;
+                        }
                     });
                 }
                 Err(_) => {}
@@ -61,7 +82,7 @@ impl Connection {
         }
     }
 
-    async fn run(&mut self) -> std::io::Result<(u64, u64)> {
+    async fn run_http_proxy(&mut self) -> std::io::Result<(u64, u64)> {
         match HttpProxy::accept(&mut self.stream).await? {
             HttpAccept::Connect { host } => {
                 let mut server = self.connect(&host).await?;
@@ -75,6 +96,16 @@ impl Connection {
 
                 let mut server = self.connect(&host).await?;
                 server.write_all(&request).await?;
+                copy_bidirectional(&mut self.stream, &mut server).await
+            }
+        }
+    }
+
+    async fn run_socks5_proxy(&mut self) -> std::io::Result<(u64, u64)> {
+        match Socks5Proxy::accept(&mut self.stream).await? {
+            Socks5Accept::Connect { host } => {
+                let mut server = self.connect(&host).await?;
+                Socks5Proxy::reply(&mut self.stream, true, server.local_addr().unwrap()).await?;
                 copy_bidirectional(&mut self.stream, &mut server).await
             }
         }

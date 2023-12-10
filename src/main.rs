@@ -18,6 +18,7 @@ enum RuleConfig {
 #[derive(Deserialize)]
 struct Config {
     http: String,
+    socks5: String,
     mmdb: String,
     proxy: String,
     rules: Vec<RuleConfig>,
@@ -62,9 +63,10 @@ fn main() {
 
     let rt = Runtime::new().unwrap();
     rt.block_on(async move {
-        let auto_proxy = AutoProxy::listen(&config.http, Arc::new(rules), config.proxy)
-            .await
-            .unwrap();
+        let auto_proxy =
+            AutoProxy::listen(&config.http, &config.socks5, Arc::new(rules), config.proxy)
+                .await
+                .unwrap();
         auto_proxy.run().await;
     });
 }
