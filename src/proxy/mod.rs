@@ -5,12 +5,9 @@ use std::sync::Arc;
 
 use crate::rule::{Rule, RuleResult};
 use futures::stream::StreamExt;
-use http::{HttpAccept, HttpProxy};
+use http::HttpProxy;
 use socks5::Socks5Proxy;
-use tokio::{
-    io::{copy_bidirectional, AsyncWriteExt},
-    net::{TcpListener, TcpStream, UdpSocket},
-};
+use tokio::net::{TcpListener, TcpStream, UdpSocket};
 
 pub struct AutoProxy {
     http_listener: TcpListener,
@@ -77,23 +74,10 @@ impl Connection {
         Self { rules, proxy }
     }
 
-    async fn run_http_proxy(&self, mut stream: TcpStream) -> std::io::Result<(u64, u64)> {
-        match HttpProxy::accept(&mut stream).await? {
-            HttpAccept::Connect { host } => {
-                let mut server = self.connect(&host).await?;
-                HttpProxy::response_200(&mut stream).await?;
-                copy_bidirectional(&mut stream, &mut server).await
-            }
-            HttpAccept::Request { mut host, request } => {
-                if !host.contains(':') {
-                    host.push_str(":80");
-                }
-
-                let mut server = self.connect(&host).await?;
-                server.write_all(&request).await?;
-                copy_bidirectional(&mut stream, &mut server).await
-            }
-        }
+    async fn run_http_proxy(&self, stream: TcpStream) -> std::io::Result<(u64, u64)> {
+        let mut inbound = HttpProxy::accept(stream).await?;
+        let mut outbound = self.connect(inbound.host()).await?;
+        inbound.copy_bidirectional_tcp_stream(&mut outbound).await
     }
 
     async fn run_socks5_proxy(&self, stream: TcpStream) -> std::io::Result<(u64, u64)> {

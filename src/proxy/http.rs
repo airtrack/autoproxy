@@ -2,19 +2,18 @@ use std::io::{Error, ErrorKind};
 
 use httparse::Status;
 use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
+    io::{copy_bidirectional, AsyncReadExt, AsyncWriteExt},
     net::TcpStream,
 };
 
-pub enum HttpAccept {
-    Connect { host: String },
-    Request { host: String, request: Vec<u8> },
+pub struct HttpProxy {
+    stream: TcpStream,
+    host: String,
+    request: Option<Vec<u8>>,
 }
 
-pub struct HttpProxy;
-
 impl HttpProxy {
-    pub async fn accept(stream: &mut TcpStream) -> std::io::Result<HttpAccept> {
+    pub async fn accept(mut stream: TcpStream) -> std::io::Result<Self> {
         let mut buf = vec![0u8; 1500];
         let mut len = 0;
 
@@ -45,7 +44,11 @@ impl HttpProxy {
                     return Err(Error::new(ErrorKind::Other, "CONNECT path empty"));
                 } else {
                     let host = req.path.unwrap().to_string();
-                    return Ok(HttpAccept::Connect { host });
+                    return Ok(Self {
+                        stream,
+                        host,
+                        request: None,
+                    });
                 }
             } else {
                 let mut host: String = String::default();
@@ -60,8 +63,16 @@ impl HttpProxy {
                     return Err(Error::new(ErrorKind::Other, "Host empty"));
                 }
 
+                if !host.contains(':') {
+                    host.push_str(":80");
+                }
+
                 buf.truncate(len);
-                return Ok(HttpAccept::Request { host, request: buf });
+                return Ok(Self {
+                    stream,
+                    host,
+                    request: Some(buf),
+                });
             }
         }
 
@@ -109,8 +120,25 @@ impl HttpProxy {
         Err(Error::new(ErrorKind::Other, "proxy response too large"))
     }
 
-    pub async fn response_200(stream: &mut TcpStream) -> std::io::Result<()> {
+    pub async fn copy_bidirectional_tcp_stream(
+        &mut self,
+        other: &mut TcpStream,
+    ) -> std::io::Result<(u64, u64)> {
+        if let Some(ref request) = self.request {
+            other.write_all(request).await?;
+        } else {
+            self.response_200().await?;
+        }
+
+        copy_bidirectional(&mut self.stream, other).await
+    }
+
+    pub fn host(&self) -> &String {
+        &self.host
+    }
+
+    async fn response_200(&mut self) -> std::io::Result<()> {
         const HTTP_200_OK: &str = "HTTP/1.1 200 OK\r\n\r\n";
-        stream.write_all(HTTP_200_OK.as_bytes()).await
+        self.stream.write_all(HTTP_200_OK.as_bytes()).await
     }
 }
