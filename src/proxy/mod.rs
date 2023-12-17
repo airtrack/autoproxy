@@ -6,10 +6,10 @@ use std::sync::Arc;
 use crate::rule::{Rule, RuleResult};
 use futures::stream::StreamExt;
 use http::{HttpAccept, HttpProxy};
-use socks5::{Socks5Accept, Socks5Proxy};
+use socks5::Socks5Proxy;
 use tokio::{
     io::{copy_bidirectional, AsyncWriteExt},
-    net::{TcpListener, TcpStream},
+    net::{TcpListener, TcpStream, UdpSocket},
 };
 
 pub struct AutoProxy {
@@ -53,11 +53,11 @@ impl AutoProxy {
                     let http_conn = stream.local_addr().unwrap().port() == self.http_port;
 
                     tokio::spawn(async move {
-                        let mut conn = Connection::new(stream, rules, proxy);
+                        let conn = Connection::new(rules, proxy);
                         if http_conn {
-                            let _ = conn.run_http_proxy().await;
+                            let _ = conn.run_http_proxy(stream).await;
                         } else {
-                            let _ = conn.run_socks5_proxy().await;
+                            let _ = conn.run_socks5_proxy(stream).await;
                         }
                     });
                 }
@@ -68,26 +68,21 @@ impl AutoProxy {
 }
 
 struct Connection {
-    stream: TcpStream,
     rules: Arc<Vec<Box<dyn Rule>>>,
     proxy: String,
 }
 
 impl Connection {
-    fn new(stream: TcpStream, rules: Arc<Vec<Box<dyn Rule>>>, proxy: String) -> Self {
-        Self {
-            stream,
-            rules,
-            proxy,
-        }
+    fn new(rules: Arc<Vec<Box<dyn Rule>>>, proxy: String) -> Self {
+        Self { rules, proxy }
     }
 
-    async fn run_http_proxy(&mut self) -> std::io::Result<(u64, u64)> {
-        match HttpProxy::accept(&mut self.stream).await? {
+    async fn run_http_proxy(&self, mut stream: TcpStream) -> std::io::Result<(u64, u64)> {
+        match HttpProxy::accept(&mut stream).await? {
             HttpAccept::Connect { host } => {
                 let mut server = self.connect(&host).await?;
-                HttpProxy::response_200(&mut self.stream).await?;
-                copy_bidirectional(&mut self.stream, &mut server).await
+                HttpProxy::response_200(&mut stream).await?;
+                copy_bidirectional(&mut stream, &mut server).await
             }
             HttpAccept::Request { mut host, request } => {
                 if !host.contains(':') {
@@ -96,17 +91,21 @@ impl Connection {
 
                 let mut server = self.connect(&host).await?;
                 server.write_all(&request).await?;
-                copy_bidirectional(&mut self.stream, &mut server).await
+                copy_bidirectional(&mut stream, &mut server).await
             }
         }
     }
 
-    async fn run_socks5_proxy(&mut self) -> std::io::Result<(u64, u64)> {
-        match Socks5Proxy::accept(&mut self.stream).await? {
-            Socks5Accept::Connect { host } => {
+    async fn run_socks5_proxy(&self, stream: TcpStream) -> std::io::Result<(u64, u64)> {
+        match Socks5Proxy::accept(stream).await? {
+            Socks5Proxy::Connect { host, mut stream } => {
                 let mut server = self.connect(&host).await?;
-                Socks5Proxy::reply(&mut self.stream, true, server.local_addr().unwrap()).await?;
-                copy_bidirectional(&mut self.stream, &mut server).await
+                Socks5Proxy::reply(&mut stream, true, server.local_addr().unwrap()).await?;
+                copy_bidirectional(&mut stream, &mut server).await
+            }
+            Socks5Proxy::UdpAssociate { socket, holder } => {
+                let outbound = UdpSocket::bind("0.0.0.0:0").await?;
+                socket.copy_bidirectional_udp_socket(outbound, holder).await
             }
         }
     }
