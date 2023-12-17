@@ -98,10 +98,9 @@ impl Connection {
 
     async fn run_socks5_proxy(&self, stream: TcpStream) -> std::io::Result<(u64, u64)> {
         match Socks5Proxy::accept(stream).await? {
-            Socks5Proxy::Connect { host, mut stream } => {
-                let mut server = self.connect(&host).await?;
-                Socks5Proxy::reply(&mut stream, true, server.local_addr().unwrap()).await?;
-                copy_bidirectional(&mut stream, &mut server).await
+            Socks5Proxy::Connect { mut stream, host } => {
+                let mut outbound = self.connect(&host).await?;
+                stream.copy_bidirectional_tcp_stream(&mut outbound).await
             }
             Socks5Proxy::UdpAssociate { socket, holder } => {
                 let outbound = UdpSocket::bind("0.0.0.0:0").await?;

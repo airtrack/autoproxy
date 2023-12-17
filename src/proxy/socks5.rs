@@ -7,7 +7,7 @@ use std::{
 
 use futures::future::abortable;
 use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
+    io::{copy_bidirectional, AsyncReadExt, AsyncWriteExt},
     net::{TcpStream, UdpSocket},
     sync::oneshot,
 };
@@ -89,8 +89,8 @@ impl Socks5Addr {
 
 pub enum Socks5Proxy {
     Connect {
+        stream: Socks5TcpStream,
         host: String,
-        stream: TcpStream,
     },
     UdpAssociate {
         socket: Socks5UdpSocket,
@@ -114,11 +114,7 @@ impl Socks5Proxy {
         }
     }
 
-    pub async fn reply(
-        stream: &mut TcpStream,
-        success: bool,
-        bind: SocketAddr,
-    ) -> std::io::Result<()> {
+    async fn reply(stream: &mut TcpStream, success: bool, bind: SocketAddr) -> std::io::Result<()> {
         let rep = if success {
             REP_SUCCESS
         } else {
@@ -165,7 +161,8 @@ impl Socks5Proxy {
 
     async fn accept_connect(mut stream: TcpStream, atype: u8) -> std::io::Result<Self> {
         let host = Self::parse_host(&mut stream, atype).await?;
-        Ok(Self::Connect { host, stream })
+        let stream = Socks5TcpStream::new(stream);
+        Ok(Self::Connect { stream, host })
     }
 
     async fn accept_udp_associate(mut stream: TcpStream, atype: u8) -> std::io::Result<Self> {
@@ -209,6 +206,24 @@ impl Socks5Proxy {
         };
 
         Ok(host)
+    }
+}
+
+pub struct Socks5TcpStream {
+    stream: TcpStream,
+}
+
+impl Socks5TcpStream {
+    fn new(stream: TcpStream) -> Self {
+        Self { stream }
+    }
+
+    pub async fn copy_bidirectional_tcp_stream(
+        &mut self,
+        other: &mut TcpStream,
+    ) -> std::io::Result<(u64, u64)> {
+        Socks5Proxy::reply(&mut self.stream, true, other.local_addr().unwrap()).await?;
+        copy_bidirectional(&mut self.stream, other).await
     }
 }
 
