@@ -15,6 +15,7 @@ use tokio::net;
 pub enum RuleResult {
     Proxy,
     Direct,
+    Block,
     NotFound,
 }
 

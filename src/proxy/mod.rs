@@ -94,24 +94,33 @@ impl Connection {
     }
 
     async fn connect(&self, host: &String) -> std::io::Result<TcpStream> {
-        if self.apply_proxy_rules(host).await {
-            println!("Proxy - {}", host);
-            HttpProxy::connect(&self.proxy, host).await
-        } else {
-            println!("Direct - {}", host);
-            TcpStream::connect(host).await
+        match self.apply_proxy_rules(host).await {
+            RuleResult::Proxy => {
+                println!("Proxy - {}", host);
+                HttpProxy::connect(&self.proxy, host).await
+            }
+            RuleResult::Direct => {
+                println!("Direct - {}", host);
+                TcpStream::connect(host).await
+            }
+            _ => {
+                println!("Block - {}", host);
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::ConnectionRefused,
+                    "Blocked",
+                ))
+            }
         }
     }
 
-    async fn apply_proxy_rules(&self, host: &String) -> bool {
+    async fn apply_proxy_rules(&self, host: &String) -> RuleResult {
         for rule in self.rules.iter() {
             match rule.find_proxy_rule(host).await {
-                RuleResult::Proxy => return true,
-                RuleResult::Direct => return false,
                 RuleResult::NotFound => {}
+                r => return r,
             }
         }
 
-        false
+        RuleResult::Direct
     }
 }
