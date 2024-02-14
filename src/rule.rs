@@ -1,8 +1,10 @@
 use std::{
+    fs::read_to_string,
     io::{Error, ErrorKind},
     net::SocketAddr,
 };
 
+use aho_corasick::AhoCorasick;
 use async_trait::async_trait;
 use ipnet::IpNet;
 use maxminddb::{geoip2, Reader};
@@ -81,6 +83,36 @@ impl DomainKeywordRule {
 impl Rule for DomainKeywordRule {
     async fn find_proxy_rule(&self, host: &String) -> RuleResult {
         if host.contains(&self.keyword) {
+            self.rule
+        } else {
+            RuleResult::NotFound
+        }
+    }
+}
+
+pub struct DomainKeywordSetRule {
+    ac: AhoCorasick,
+    rule: RuleResult,
+}
+
+impl DomainKeywordSetRule {
+    pub fn new(file: &str, rule: RuleResult) -> Self {
+        let content = read_to_string(file).unwrap();
+        let lines = content.lines().filter(|line| !line.starts_with("#"));
+        Self {
+            ac: AhoCorasick::builder()
+                .ascii_case_insensitive(true)
+                .build(lines)
+                .unwrap(),
+            rule,
+        }
+    }
+}
+
+#[async_trait]
+impl Rule for DomainKeywordSetRule {
+    async fn find_proxy_rule(&self, host: &String) -> RuleResult {
+        if self.ac.is_match(host) {
             self.rule
         } else {
             RuleResult::NotFound

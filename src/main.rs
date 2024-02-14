@@ -2,7 +2,9 @@ use std::sync::Arc;
 use std::{env, fs};
 
 use autoproxy::proxy::AutoProxy;
-use autoproxy::rule::{DirectRule, DomainKeywordRule, GeoIpRule, IpNetRule, Rule, RuleResult};
+use autoproxy::rule::{
+    DirectRule, DomainKeywordRule, DomainKeywordSetRule, GeoIpRule, IpNetRule, Rule, RuleResult,
+};
 use serde::Deserialize;
 use tokio::runtime::Runtime;
 
@@ -12,6 +14,7 @@ enum RuleConfig {
     Direct { rule: RuleResult },
     IpNet { ipnet: String, rule: RuleResult },
     DomainKeyword { keyword: String, rule: RuleResult },
+    DomainKeywordSet { file: String, rule: RuleResult },
     GeoIp { country: String, rule: RuleResult },
 }
 
@@ -52,6 +55,11 @@ fn main() {
                 println!("DomainKeyword {} {:?}", keyword, rule);
                 let keyword = DomainKeywordRule::new(keyword, rule);
                 rules.push(Box::new(keyword));
+            }
+            RuleConfig::DomainKeywordSet { file, rule } => {
+                println!("DomainKeywordSet {} {:?}", file, rule);
+                let set = DomainKeywordSetRule::new(&file, rule);
+                rules.push(Box::new(set));
             }
             RuleConfig::GeoIp { country, rule } => {
                 println!("GeoIp {} {:?}", country, rule);
