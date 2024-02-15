@@ -91,15 +91,15 @@ impl Rule for DomainKeywordRule {
     }
 }
 
-pub struct DomainKeywordSetRule {
+pub struct DomainSuffixSetRule {
     ac: AhoCorasick,
     rule: RuleResult,
 }
 
-impl DomainKeywordSetRule {
+impl DomainSuffixSetRule {
     pub fn new(file: &str, rule: RuleResult) -> Self {
         let content = read_to_string(file).unwrap();
-        let lines = content.lines().filter(|line| !line.starts_with("#"));
+        let lines = content.lines().filter(|line| !line.starts_with('#'));
         Self {
             ac: AhoCorasick::builder()
                 .ascii_case_insensitive(true)
@@ -111,13 +111,22 @@ impl DomainKeywordSetRule {
 }
 
 #[async_trait]
-impl Rule for DomainKeywordSetRule {
+impl Rule for DomainSuffixSetRule {
     async fn find_proxy_rule(&self, host: &String) -> RuleResult {
-        if self.ac.is_match(host) {
-            self.rule
-        } else {
-            RuleResult::NotFound
+        let parts: Vec<&str> = host.split(':').collect();
+        let domain = parts[0];
+        for mat in self.ac.find_overlapping_iter(domain) {
+            if mat.end() == domain.len() {
+                let index = mat.start();
+                if index == 0 {
+                    return self.rule;
+                }
+                if &domain[index - 1..index] == "." {
+                    return self.rule;
+                }
+            }
         }
+        RuleResult::NotFound
     }
 }
 
