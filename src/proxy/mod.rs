@@ -4,9 +4,11 @@ mod socks5;
 use std::sync::Arc;
 
 use crate::rule::{Rule, RuleResult};
-use futures::stream::StreamExt;
 use http::HttpProxy;
 use socks5::Socks5Proxy;
+
+use futures::stream::StreamExt;
+use log::info;
 use tokio::net::{TcpListener, TcpStream, UdpSocket};
 
 pub struct AutoProxy {
@@ -96,15 +98,15 @@ impl Connection {
     async fn connect(&self, host: &String) -> std::io::Result<TcpStream> {
         match self.apply_proxy_rules(host).await {
             RuleResult::Proxy => {
-                println!("Proxy - {}", host);
+                info!("Proxy - {}", host);
                 HttpProxy::connect(&self.proxy, host).await
             }
             RuleResult::Direct => {
-                println!("Direct - {}", host);
+                info!("Direct - {}", host);
                 TcpStream::connect(host).await
             }
             _ => {
-                println!("Block - {}", host);
+                info!("Block - {}", host);
                 Err(std::io::Error::new(
                     std::io::ErrorKind::ConnectionRefused,
                     "Blocked",

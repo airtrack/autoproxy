@@ -6,6 +6,7 @@ use std::{
 };
 
 use futures::future::abortable;
+use log::{error, info};
 use tokio::{
     io::{copy_bidirectional, AsyncReadExt, AsyncWriteExt},
     net::{TcpStream, UdpSocket},
@@ -283,11 +284,11 @@ impl Socks5UdpSocket {
             let from1 = match inbound1.recv(&mut buf).await {
                 Ok((range, from, to)) => {
                     let _ = outbound1.send_to(&buf[range], to).await;
-                    println!("SOCKS5 UDP from {}", from);
+                    info!("SOCKS5 UDP from {}", from);
                     from
                 }
                 Err(e) => {
-                    println!("SOCKS5 UDP recv error {}", e);
+                    error!("SOCKS5 UDP recv error {}", e);
                     return;
                 }
             };
@@ -303,11 +304,11 @@ impl Socks5UdpSocket {
                         if from1 == from2 {
                             let _ = outbound1.send_to(&buf[range], to).await;
                         } else {
-                            println!("SOCKS5 UDP from addr not match {} != {}", from1, from2);
+                            error!("SOCKS5 UDP from addr not match {} != {}", from1, from2);
                         }
                     }
                     Err(e) => {
-                        println!("SOCKS5 UDP recv from {} error {}", from1, e);
+                        error!("SOCKS5 UDP recv from {} error {}", from1, e);
                     }
                 }
             }
@@ -327,7 +328,7 @@ impl Socks5UdpSocket {
                         match inbound2.send(&mut buf, start..start + size, from, to).await {
                             Ok(_) => {}
                             Err(e) => {
-                                println!("SOCKS5 UDP from {} to {} error {}", from, to, e);
+                                error!("SOCKS5 UDP from {} to {} error {}", from, to, e);
                             }
                         }
                     }

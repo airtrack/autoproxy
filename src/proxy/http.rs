@@ -1,6 +1,7 @@
 use std::io::{Error, ErrorKind};
 
 use httparse::Status;
+use log::info;
 use tokio::{
     io::{copy_bidirectional, AsyncReadExt, AsyncWriteExt},
     net::TcpStream,
@@ -108,7 +109,7 @@ impl HttpProxy {
                     return Err(Error::new(ErrorKind::Other, error));
                 }
                 Ok(Status::Partial) => {
-                    println!("parse HTTP response partial, len: {}", len);
+                    info!("parse HTTP response partial, len: {}", len);
                     continue;
                 }
                 Err(_) => {

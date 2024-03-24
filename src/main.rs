@@ -5,6 +5,8 @@ use autoproxy::proxy::AutoProxy;
 use autoproxy::rule::{
     DirectRule, DomainKeywordRule, DomainSuffixSetRule, GeoIpRule, IpNetRule, Rule, RuleResult,
 };
+
+use log::info;
 use serde::Deserialize;
 use tokio::runtime::Runtime;
 
@@ -34,6 +36,12 @@ fn main() {
         return;
     }
 
+    env_logger::builder()
+        .format_timestamp(None)
+        .filter_level(log::LevelFilter::Info)
+        .parse_default_env()
+        .init();
+
     let content = String::from_utf8(fs::read(&args.nth(1).unwrap()).unwrap()).unwrap();
     let config: Config = toml::from_str(&content).unwrap();
 
@@ -42,27 +50,27 @@ fn main() {
     for rule in config.rules {
         match rule {
             RuleConfig::Direct { rule } => {
-                println!("DirectRule {:?}", rule);
+                info!("DirectRule {:?}", rule);
                 let direct = DirectRule::new(rule);
                 rules.push(Box::new(direct));
             }
             RuleConfig::IpNet { ipnet, rule } => {
-                println!("IpNetRule {} {:?}", ipnet, rule);
+                info!("IpNetRule {} {:?}", ipnet, rule);
                 let net = IpNetRule::new(&ipnet, rule);
                 rules.push(Box::new(net));
             }
             RuleConfig::DomainKeyword { keyword, rule } => {
-                println!("DomainKeyword {} {:?}", keyword, rule);
+                info!("DomainKeyword {} {:?}", keyword, rule);
                 let keyword = DomainKeywordRule::new(keyword, rule);
                 rules.push(Box::new(keyword));
             }
             RuleConfig::DomainSuffixSet { file, rule } => {
-                println!("DomainSuffixSet {} {:?}", file, rule);
+                info!("DomainSuffixSet {} {:?}", file, rule);
                 let set = DomainSuffixSetRule::new(&file, rule);
                 rules.push(Box::new(set));
             }
             RuleConfig::GeoIp { country, rule } => {
-                println!("GeoIp {} {:?}", country, rule);
+                info!("GeoIp {} {:?}", country, rule);
                 let geoip = GeoIpRule::new(&config.mmdb, country, rule);
                 rules.push(Box::new(geoip));
             }
