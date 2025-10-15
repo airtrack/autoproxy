@@ -21,7 +21,7 @@ pub enum RuleResult {
 
 #[async_trait]
 pub trait Rule: Sync + Send {
-    async fn find_proxy_rule(&self, host: &String) -> RuleResult;
+    async fn find_proxy_rule(&self, host: &str) -> RuleResult;
 }
 
 pub struct DirectRule {
@@ -36,7 +36,7 @@ impl DirectRule {
 
 #[async_trait]
 impl Rule for DirectRule {
-    async fn find_proxy_rule(&self, _: &String) -> RuleResult {
+    async fn find_proxy_rule(&self, _: &str) -> RuleResult {
         self.rule
     }
 }
@@ -55,7 +55,7 @@ impl IpNetRule {
 
 #[async_trait]
 impl Rule for IpNetRule {
-    async fn find_proxy_rule(&self, host: &String) -> RuleResult {
+    async fn find_proxy_rule(&self, host: &str) -> RuleResult {
         match host.parse::<SocketAddr>() {
             Ok(addr) => {
                 if self.net.contains(&addr.ip()) {
@@ -82,7 +82,7 @@ impl DomainKeywordRule {
 
 #[async_trait]
 impl Rule for DomainKeywordRule {
-    async fn find_proxy_rule(&self, host: &String) -> RuleResult {
+    async fn find_proxy_rule(&self, host: &str) -> RuleResult {
         if host.contains(&self.keyword) {
             self.rule
         } else {
@@ -112,7 +112,7 @@ impl DomainSuffixSetRule {
 
 #[async_trait]
 impl Rule for DomainSuffixSetRule {
-    async fn find_proxy_rule(&self, host: &String) -> RuleResult {
+    async fn find_proxy_rule(&self, host: &str) -> RuleResult {
         let parts: Vec<&str> = host.split(':').collect();
         let domain = parts[0];
         for mat in self.ac.find_overlapping_iter(domain) {
@@ -146,7 +146,7 @@ impl GeoIpRule {
         }
     }
 
-    async fn need_to_proxy(&self, host: &String) -> std::io::Result<RuleResult> {
+    async fn need_to_proxy(&self, host: &str) -> std::io::Result<RuleResult> {
         let addrs = net::lookup_host(host).await?;
 
         for addr in addrs {
@@ -169,7 +169,7 @@ impl GeoIpRule {
 
 #[async_trait]
 impl Rule for GeoIpRule {
-    async fn find_proxy_rule(&self, host: &String) -> RuleResult {
+    async fn find_proxy_rule(&self, host: &str) -> RuleResult {
         self.need_to_proxy(host)
             .await
             .unwrap_or(RuleResult::NotFound)

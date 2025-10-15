@@ -80,7 +80,7 @@ impl HttpProxy {
         Err(Error::new(ErrorKind::Other, "http header too large"))
     }
 
-    pub async fn connect(addr: &String, host: &String) -> std::io::Result<TcpStream> {
+    pub async fn connect(addr: &String, host: &str) -> std::io::Result<TcpStream> {
         let mut proxy = TcpStream::connect(addr).await?;
         let req = format!("CONNECT {} HTTP/1.1\r\nHost: {}\r\n\r\n", host, host);
         proxy.write_all(req.as_bytes()).await?;

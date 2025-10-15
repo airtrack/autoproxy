@@ -1,11 +1,10 @@
 mod http;
 mod socks5;
 
-use std::sync::Arc;
+use std::{net::SocketAddr, sync::Arc};
 
 use crate::rule::{Rule, RuleResult};
 use http::HttpProxy;
-use socks5::Socks5Proxy;
 
 use futures::stream::StreamExt;
 use log::info;
@@ -83,19 +82,60 @@ impl Connection {
     }
 
     async fn run_socks5_proxy(&self, stream: TcpStream) -> std::io::Result<(u64, u64)> {
-        match Socks5Proxy::accept(stream).await? {
-            Socks5Proxy::Connect { mut stream, host } => {
-                let mut outbound = self.connect(&host).await?;
-                stream.copy_bidirectional_tcp_stream(&mut outbound).await
+        match socks5::accept(stream).await? {
+            socks5::AcceptResult::Connect(tcp_incoming) => {
+                let mut outbound = self.connect(tcp_incoming.destination()).await?;
+                let mut inbound = tcp_incoming.reply_ok(outbound.local_addr()?).await?;
+                tokio::io::copy_bidirectional(&mut inbound, &mut outbound).await
             }
-            Socks5Proxy::UdpAssociate { socket, holder } => {
+            socks5::AcceptResult::UdpAssociate(udp_incoming) => {
+                let mut buf = socks5::UdpSocketBuf::new();
+                let (inbound, holder, dst) = udp_incoming.recv_wait(&mut buf).await?;
                 let outbound = UdpSocket::bind("0.0.0.0:0").await?;
-                socket.copy_bidirectional_udp_socket(outbound, holder).await
+
+                outbound.send_to(buf.as_ref(), dst).await?;
+                async fn udp_send(
+                    inbound: &socks5::UdpSocket,
+                    outbound: &UdpSocket,
+                ) -> std::io::Result<()> {
+                    let mut buf = socks5::UdpSocketBuf::new();
+                    loop {
+                        let addr = inbound.recv(&mut buf).await?;
+                        outbound.send_to(buf.as_ref(), addr).await?;
+                    }
+                }
+
+                async fn udp_recv(
+                    inbound: &socks5::UdpSocket,
+                    outbound: &UdpSocket,
+                ) -> std::io::Result<()> {
+                    let mut buf = socks5::UdpSocketBuf::new();
+                    loop {
+                        if let (len, SocketAddr::V4(from)) =
+                            outbound.recv_from(buf.as_mut()).await?
+                        {
+                            buf.set_len(len);
+                            inbound.send(&mut buf, from).await?;
+                        }
+                    }
+                }
+
+                async fn udp_holder(mut holder: socks5::UdpSocketHolder) -> std::io::Result<()> {
+                    holder.wait().await
+                }
+
+                futures::try_join!(
+                    udp_send(&inbound, &outbound),
+                    udp_recv(&inbound, &outbound),
+                    udp_holder(holder),
+                )?;
+
+                Ok((0, 0))
             }
         }
     }
 
-    async fn connect(&self, host: &String) -> std::io::Result<TcpStream> {
+    async fn connect(&self, host: &str) -> std::io::Result<TcpStream> {
         match self.apply_proxy_rules(host).await {
             RuleResult::Proxy => {
                 info!("Proxy - {}", host);
@@ -115,7 +155,7 @@ impl Connection {
         }
     }
 
-    async fn apply_proxy_rules(&self, host: &String) -> RuleResult {
+    async fn apply_proxy_rules(&self, host: &str) -> RuleResult {
         for rule in self.rules.iter() {
             match rule.find_proxy_rule(host).await {
                 RuleResult::NotFound => {}
