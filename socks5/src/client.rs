@@ -71,7 +71,7 @@ impl Connector {
                 request[8..10].copy_from_slice(&addr.port().to_be_bytes());
             }
             SocketAddr::V6(_) => {
-                return Err(Error::new(ErrorKind::Other, "socks5: unsupport IPv6"))
+                return Err(Error::new(ErrorKind::Other, "socks5: unsupport IPv6"));
             }
         }
 

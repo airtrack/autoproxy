@@ -7,7 +7,7 @@ use std::{
 use aho_corasick::AhoCorasick;
 use async_trait::async_trait;
 use ipnet::IpNet;
-use maxminddb::{geoip2, Reader};
+use maxminddb::{Reader, geoip2};
 use serde::Deserialize;
 use tokio::net;
 
