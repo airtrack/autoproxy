@@ -1,11 +1,11 @@
 use std::{net::SocketAddr, sync::Arc};
 
-use crate::rule::{Rule, RuleResult};
-use httpproxy::HttpProxy;
-
 use futures::stream::StreamExt;
+use httpproxy::HttpProxy;
 use log::info;
 use tokio::net::{TcpListener, TcpStream, UdpSocket};
+
+use crate::rule::{Rule, RuleResult};
 
 pub struct AutoProxy {
     http_listener: TcpListener,
