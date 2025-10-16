@@ -1,10 +1,7 @@
-mod http;
-mod socks5;
-
 use std::{net::SocketAddr, sync::Arc};
 
 use crate::rule::{Rule, RuleResult};
-use http::HttpProxy;
+use httpproxy::HttpProxy;
 
 use futures::stream::StreamExt;
 use log::info;

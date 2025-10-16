@@ -1,0 +1,21 @@
+[package]
+name = "autoproxy"
+version = "0.1.0"
+authors = ["airtrack <airtrack.sk@gmail.com>"]
+edition = "2021"
+
+[dependencies]
+socks5 = { path = "../socks5" }
+httpproxy = { path = "../httpproxy" }
+tokio = { version = "1.34.0", features = ["full"] }
+tokio-stream = { version = "0.1", features = ["net"] }
+maxminddb = "0.17"
+async-trait = "*"
+httparse = "*"
+ipnet = "2.9.0"
+toml = "0.8.8"
+serde = "1.0"
+futures = "0.3"
+aho-corasick = "1.1.2"
+log = "0.4"
+env_logger = "0.11"

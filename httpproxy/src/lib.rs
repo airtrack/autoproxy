@@ -3,7 +3,7 @@ use std::io::{Error, ErrorKind};
 use httparse::Status;
 use log::info;
 use tokio::{
-    io::{copy_bidirectional, AsyncReadExt, AsyncWriteExt},
+    io::{AsyncReadExt, AsyncWriteExt, copy_bidirectional},
     net::TcpStream,
 };
 
