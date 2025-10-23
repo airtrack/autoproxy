@@ -1,142 +1,33 @@
-use std::{net::SocketAddr, sync::Arc};
+use std::{
+    io::{Error, ErrorKind, Result},
+    sync::Arc,
+};
 
-use futures::stream::StreamExt;
 use httpproxy::HttpProxy;
 use log::info;
+use socks5::{TcpIncoming, UdpIncoming};
 use tokio::net::{TcpListener, TcpStream, UdpSocket};
 
 use crate::rule::{Rule, RuleResult};
 
-pub struct AutoProxy {
-    http_listener: TcpListener,
-    socks5_listener: TcpListener,
+#[derive(Clone)]
+pub struct AutoRules {
     rules: Arc<Vec<Box<dyn Rule>>>,
-    proxy: String,
-    http_port: u16,
 }
 
-impl AutoProxy {
-    pub async fn listen(
-        http: &str,
-        socks5: &str,
-        rules: Arc<Vec<Box<dyn Rule>>>,
-        proxy: String,
-    ) -> std::io::Result<Self> {
-        let http_listener = TcpListener::bind(http).await?;
-        let socks5_listener = TcpListener::bind(socks5).await?;
-        let http_port = http_listener.local_addr().unwrap().port();
-        Ok(Self {
-            http_listener,
-            socks5_listener,
-            rules,
-            proxy,
-            http_port,
-        })
+impl AutoRules {
+    pub fn new(rules: Arc<Vec<Box<dyn Rule>>>) -> Self {
+        Self { rules }
     }
 
-    pub async fn run(self) {
-        let mut listener = futures::stream::select(
-            tokio_stream::wrappers::TcpListenerStream::new(self.http_listener),
-            tokio_stream::wrappers::TcpListenerStream::new(self.socks5_listener),
-        );
-
-        while let Some(stream) = listener.next().await {
-            match stream {
-                Ok(stream) => {
-                    let rules = self.rules.clone();
-                    let proxy = self.proxy.clone();
-                    let http_conn = stream.local_addr().unwrap().port() == self.http_port;
-
-                    tokio::spawn(async move {
-                        let conn = Connection::new(rules, proxy);
-                        if http_conn {
-                            let _ = conn.run_http_proxy(stream).await;
-                        } else {
-                            let _ = conn.run_socks5_proxy(stream).await;
-                        }
-                    });
-                }
-                Err(_) => {}
-            }
-        }
-    }
-}
-
-struct Connection {
-    rules: Arc<Vec<Box<dyn Rule>>>,
-    proxy: String,
-}
-
-impl Connection {
-    fn new(rules: Arc<Vec<Box<dyn Rule>>>, proxy: String) -> Self {
-        Self { rules, proxy }
-    }
-
-    async fn run_http_proxy(&self, stream: TcpStream) -> std::io::Result<(u64, u64)> {
-        let mut inbound = HttpProxy::accept(stream).await?;
-        let mut outbound = self.connect(inbound.host()).await?;
-        inbound.copy_bidirectional_tcp_stream(&mut outbound).await
-    }
-
-    async fn run_socks5_proxy(&self, stream: TcpStream) -> std::io::Result<(u64, u64)> {
-        match socks5::accept(stream).await? {
-            socks5::AcceptResult::Connect(tcp_incoming) => {
-                let mut outbound = self.connect(tcp_incoming.destination()).await?;
-                let mut inbound = tcp_incoming.reply_ok(outbound.local_addr()?).await?;
-                tokio::io::copy_bidirectional(&mut inbound, &mut outbound).await
-            }
-            socks5::AcceptResult::UdpAssociate(udp_incoming) => {
-                let mut buf = socks5::UdpSocketBuf::new();
-                let (inbound, holder, dst) = udp_incoming.recv_wait(&mut buf).await?;
-                let outbound = UdpSocket::bind("0.0.0.0:0").await?;
-
-                outbound.send_to(buf.as_ref(), dst).await?;
-                async fn udp_send(
-                    inbound: &socks5::UdpSocket,
-                    outbound: &UdpSocket,
-                ) -> std::io::Result<()> {
-                    let mut buf = socks5::UdpSocketBuf::new();
-                    loop {
-                        let addr = inbound.recv(&mut buf).await?;
-                        outbound.send_to(buf.as_ref(), addr).await?;
-                    }
-                }
-
-                async fn udp_recv(
-                    inbound: &socks5::UdpSocket,
-                    outbound: &UdpSocket,
-                ) -> std::io::Result<()> {
-                    let mut buf = socks5::UdpSocketBuf::new();
-                    loop {
-                        if let (len, SocketAddr::V4(from)) =
-                            outbound.recv_from(buf.as_mut()).await?
-                        {
-                            buf.set_len(len);
-                            inbound.send(&mut buf, from).await?;
-                        }
-                    }
-                }
-
-                async fn udp_holder(mut holder: socks5::UdpSocketHolder) -> std::io::Result<()> {
-                    holder.wait().await
-                }
-
-                futures::try_join!(
-                    udp_send(&inbound, &outbound),
-                    udp_recv(&inbound, &outbound),
-                    udp_holder(holder),
-                )?;
-
-                Ok((0, 0))
-            }
-        }
-    }
-
-    async fn connect(&self, host: &str) -> std::io::Result<TcpStream> {
+    async fn connect<F>(&self, proxy: &str, host: &str, f: F) -> Result<TcpStream>
+    where
+        F: AsyncFnOnce(&str, &str) -> Result<TcpStream>,
+    {
         match self.apply_proxy_rules(host).await {
             RuleResult::Proxy => {
                 info!("Proxy - {}", host);
-                HttpProxy::connect(&self.proxy, host).await
+                f(proxy, host).await
             }
             RuleResult::Direct => {
                 info!("Direct - {}", host);
@@ -144,10 +35,7 @@ impl Connection {
             }
             _ => {
                 info!("Block - {}", host);
-                Err(std::io::Error::new(
-                    std::io::ErrorKind::ConnectionRefused,
-                    "Blocked",
-                ))
+                Err(Error::new(ErrorKind::ConnectionRefused, "Blocked"))
             }
         }
     }
@@ -162,4 +50,116 @@ impl Connection {
 
         RuleResult::Direct
     }
+}
+
+pub async fn run_http_proxy(listen: &str, proxy: &String, rules: &AutoRules) -> Result<()> {
+    let listener = TcpListener::bind(listen).await?;
+
+    loop {
+        let (stream, _) = listener.accept().await?;
+        let proxy = proxy.clone();
+        let rules = rules.clone();
+
+        tokio::spawn(async move { run_http_proxy_connection(stream, rules, &proxy).await });
+    }
+}
+
+pub async fn run_socks5_proxy(listen: &str, proxy: &String, rules: &AutoRules) -> Result<()> {
+    let listener = TcpListener::bind(listen).await?;
+
+    loop {
+        let (stream, _) = listener.accept().await?;
+        let proxy = proxy.clone();
+        let rules = rules.clone();
+
+        tokio::spawn(async move { run_socks5_proxy_connection(stream, rules, &proxy).await });
+    }
+}
+
+async fn run_http_proxy_connection(stream: TcpStream, rules: AutoRules, proxy: &str) -> Result<()> {
+    let mut inbound = HttpProxy::accept(stream).await?;
+    let mut outbound = rules
+        .connect(proxy, inbound.host(), async |proxy, host| {
+            HttpProxy::connect(proxy, host).await
+        })
+        .await?;
+    inbound
+        .copy_bidirectional_tcp_stream(&mut outbound)
+        .await
+        .map(|_| ())
+}
+
+async fn run_socks5_proxy_connection(
+    stream: TcpStream,
+    rules: AutoRules,
+    proxy: &str,
+) -> Result<()> {
+    match socks5::accept(stream).await? {
+        socks5::AcceptResult::Connect(incoming) => {
+            run_socks5_tcp_proxy(incoming, rules, proxy).await
+        }
+        socks5::AcceptResult::UdpAssociate(incoming) => {
+            run_socks5_udp_proxy(incoming, rules, proxy).await
+        }
+    }
+}
+
+async fn run_socks5_tcp_proxy(incoming: TcpIncoming, rules: AutoRules, proxy: &str) -> Result<()> {
+    let host = match incoming.destination() {
+        socks5::Address::Host(host) => host.clone(),
+        socks5::Address::Ip(addr) => addr.to_string(),
+    };
+    let destination = incoming.destination().clone();
+
+    let mut outbound = rules
+        .connect(proxy, &host, async |proxy, _| {
+            socks5::connect(proxy, destination).await
+        })
+        .await?;
+
+    let mut inbound = incoming.reply_ok(outbound.local_addr()?).await?;
+
+    tokio::io::copy_bidirectional(&mut inbound, &mut outbound)
+        .await
+        .map(|_| ())
+}
+
+async fn run_socks5_udp_proxy(
+    incoming: UdpIncoming,
+    _rules: AutoRules,
+    _proxy: &str,
+) -> Result<()> {
+    let mut buf = socks5::UdpSocketBuf::new();
+    let (inbound, holder, dst) = incoming.recv_wait(&mut buf).await?;
+    let outbound = UdpSocket::bind("0.0.0.0:0").await?;
+
+    outbound.send_to(buf.as_ref(), dst).await?;
+    async fn udp_send(inbound: &socks5::UdpSocket, outbound: &UdpSocket) -> Result<()> {
+        let mut buf = socks5::UdpSocketBuf::new();
+        loop {
+            let addr = inbound.recv(&mut buf).await?;
+            outbound.send_to(buf.as_ref(), addr).await?;
+        }
+    }
+
+    async fn udp_recv(inbound: &socks5::UdpSocket, outbound: &UdpSocket) -> Result<()> {
+        let mut buf = socks5::UdpSocketBuf::new();
+        loop {
+            let (len, from) = outbound.recv_from(buf.as_mut()).await?;
+            buf.set_len(len);
+            inbound.send(&mut buf, from).await?;
+        }
+    }
+
+    async fn udp_holder(mut holder: socks5::UdpSocketHolder) -> Result<()> {
+        holder.wait().await
+    }
+
+    futures::try_join!(
+        udp_send(&inbound, &outbound),
+        udp_recv(&inbound, &outbound),
+        udp_holder(holder),
+    )?;
+
+    Ok(())
 }

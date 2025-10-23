@@ -1,10 +1,10 @@
-use std::io::{Error, ErrorKind};
+use std::io::{Error, ErrorKind, Result};
 
 use httparse::Status;
 use log::info;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt, copy_bidirectional},
-    net::TcpStream,
+    net::{TcpStream, ToSocketAddrs},
 };
 
 pub struct HttpProxy {
@@ -14,7 +14,7 @@ pub struct HttpProxy {
 }
 
 impl HttpProxy {
-    pub async fn accept(mut stream: TcpStream) -> std::io::Result<Self> {
+    pub async fn accept(mut stream: TcpStream) -> Result<Self> {
         let mut buf = vec![0u8; 1500];
         let mut len = 0;
 
@@ -80,7 +80,7 @@ impl HttpProxy {
         Err(Error::new(ErrorKind::Other, "http header too large"))
     }
 
-    pub async fn connect(addr: &String, host: &str) -> std::io::Result<TcpStream> {
+    pub async fn connect<A: ToSocketAddrs>(addr: A, host: &str) -> Result<TcpStream> {
         let mut proxy = TcpStream::connect(addr).await?;
         let req = format!("CONNECT {} HTTP/1.1\r\nHost: {}\r\n\r\n", host, host);
         proxy.write_all(req.as_bytes()).await?;
@@ -124,7 +124,7 @@ impl HttpProxy {
     pub async fn copy_bidirectional_tcp_stream(
         &mut self,
         other: &mut TcpStream,
-    ) -> std::io::Result<(u64, u64)> {
+    ) -> Result<(u64, u64)> {
         if let Some(ref request) = self.request {
             other.write_all(request).await?;
         } else {
@@ -134,11 +134,11 @@ impl HttpProxy {
         copy_bidirectional(&mut self.stream, other).await
     }
 
-    pub fn host(&self) -> &String {
+    pub fn host(&self) -> &str {
         &self.host
     }
 
-    async fn response_200(&mut self) -> std::io::Result<()> {
+    async fn response_200(&mut self) -> Result<()> {
         const HTTP_200_OK: &str = "HTTP/1.1 200 OK\r\n\r\n";
         self.stream.write_all(HTTP_200_OK.as_bytes()).await
     }

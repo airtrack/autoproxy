@@ -7,7 +7,7 @@ use tokio::net::TcpStream;
 use crate::proto::*;
 use crate::udp::*;
 
-pub async fn accept(stream: TcpStream) -> std::io::Result<AcceptResult> {
+pub async fn accept(stream: TcpStream) -> Result<AcceptResult> {
     let acceptor = Acceptor::new(stream);
     acceptor.accept().await
 }
@@ -19,16 +19,16 @@ pub enum AcceptResult {
 
 pub struct TcpIncoming {
     acceptor: Acceptor,
-    host: String,
+    addr: Address,
 }
 
 impl TcpIncoming {
-    fn new(acceptor: Acceptor, host: String) -> Self {
-        Self { acceptor, host }
+    fn new(acceptor: Acceptor, addr: Address) -> Self {
+        Self { acceptor, addr }
     }
 
-    pub fn destination(&self) -> &str {
-        &self.host
+    pub fn destination(&self) -> &Address {
+        &self.addr
     }
 
     pub async fn reply_ok(mut self, bind: SocketAddr) -> Result<TcpStream> {
@@ -59,10 +59,10 @@ impl UdpIncoming {
     pub async fn recv_wait(
         self,
         buf: &mut UdpSocketBuf,
-    ) -> Result<(UdpSocket, UdpSocketHolder, SocketAddrV4)> {
+    ) -> Result<(UdpSocket, UdpSocketHolder, SocketAddr)> {
         let (from, addr) = self.socket.recv(buf).await?;
         let socket = UdpSocket::from(self.socket, from);
-        Ok((socket, self.holder, addr))
+        Ok((socket, self.holder, SocketAddr::V4(addr)))
     }
 }
 
@@ -75,7 +75,7 @@ impl Acceptor {
         Self { stream }
     }
 
-    async fn accept(mut self) -> std::io::Result<AcceptResult> {
+    async fn accept(mut self) -> Result<AcceptResult> {
         self.select_method().await?;
 
         let mut req = [0u8; 4];
@@ -90,14 +90,14 @@ impl Acceptor {
         }
     }
 
-    async fn accept_connect(mut self, atype: u8) -> std::io::Result<AcceptResult> {
-        let host = self.parse_host(atype).await?;
-        let incoming = TcpIncoming::new(self, host);
+    async fn accept_connect(mut self, atype: u8) -> Result<AcceptResult> {
+        let addr = self.parse_addr(atype).await?;
+        let incoming = TcpIncoming::new(self, addr);
         Ok(AcceptResult::Connect(incoming))
     }
 
-    async fn accept_udp_associate(mut self, atype: u8) -> std::io::Result<AcceptResult> {
-        let _ = self.parse_host(atype).await?;
+    async fn accept_udp_associate(mut self, atype: u8) -> Result<AcceptResult> {
+        let _ = self.parse_addr(atype).await?;
         let socket = tokio::net::UdpSocket::bind("0.0.0.0:0").await?;
         self.reply(true, socket.local_addr()?).await?;
 
@@ -107,7 +107,7 @@ impl Acceptor {
         Ok(AcceptResult::UdpAssociate(incoming))
     }
 
-    async fn reply(&mut self, success: bool, bind: SocketAddr) -> std::io::Result<()> {
+    async fn reply(&mut self, success: bool, bind: SocketAddr) -> Result<()> {
         let rep = if success {
             REP_SUCCESS
         } else {
@@ -130,7 +130,7 @@ impl Acceptor {
         }
     }
 
-    async fn select_method(&mut self) -> std::io::Result<()> {
+    async fn select_method(&mut self) -> Result<()> {
         let mut buf = [0u8; 2];
         self.stream.read_exact(&mut buf).await?;
 
@@ -151,16 +151,14 @@ impl Acceptor {
         self.stream.write_all(&ack).await
     }
 
-    async fn parse_host(&mut self, atype: u8) -> std::io::Result<String> {
-        let host = match atype {
+    async fn parse_addr(&mut self, atype: u8) -> Result<Address> {
+        match atype {
             ATYP_IPV4 => {
-                let mut octets = [0u8; 4];
-                self.stream.read_exact(&mut octets).await?;
+                let ip = self.stream.read_u32().await?;
                 let port = self.stream.read_u16().await?;
-                format!(
-                    "{}.{}.{}.{}:{}",
-                    octets[0], octets[1], octets[2], octets[3], port
-                )
+                let ip = Ipv4Addr::from_bits(ip);
+                let addr = SocketAddrV4::new(ip, port);
+                Ok(Address::Ip(SocketAddr::V4(addr)))
             }
             ATYP_DOMAIN => {
                 let len = self.stream.read_u8().await?;
@@ -169,18 +167,16 @@ impl Acceptor {
                 let port = self.stream.read_u16().await?;
                 let host = String::from_utf8(domain)
                     .map_err(|_| Error::new(ErrorKind::Other, "socks5: invalid domain"))?;
-                format!("{}:{}", host, port)
+                Ok(Address::Host(format!("{}:{}", host, port)))
             }
             ATYP_IPV6 => {
                 let error = format!("socks5: unsupport IPv6");
-                return Err(Error::new(ErrorKind::Other, error));
+                Err(Error::new(ErrorKind::Other, error))
             }
             addr_type => {
                 let error = format!("socks5: unknown addr type {}", addr_type);
-                return Err(Error::new(ErrorKind::Other, error));
+                Err(Error::new(ErrorKind::Other, error))
             }
-        };
-
-        Ok(host)
+        }
     }
 }

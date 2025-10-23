@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use std::{env, fs};
 
-use autoproxy::proxy::AutoProxy;
+use autoproxy::proxy::{AutoRules, run_http_proxy, run_socks5_proxy};
 use autoproxy::rule::{
     DirectRule, DomainKeywordRule, DomainSuffixSetRule, GeoIpRule, IpNetRule, Rule, RuleResult,
 };
@@ -21,11 +21,22 @@ enum RuleConfig {
 }
 
 #[derive(Deserialize)]
-struct Config {
+struct Listen {
     http: String,
     socks5: String,
+}
+
+#[derive(Deserialize)]
+struct Proxy {
+    http: String,
+    socks5: String,
+}
+
+#[derive(Deserialize)]
+struct Config {
+    listen: Listen,
+    proxy: Proxy,
     mmdb: String,
-    proxy: String,
     rules: Vec<RuleConfig>,
 }
 
@@ -77,12 +88,12 @@ fn main() {
         }
     }
 
+    let rules = AutoRules::new(Arc::new(rules));
+
     let rt = Runtime::new().unwrap();
     rt.block_on(async move {
-        let auto_proxy =
-            AutoProxy::listen(&config.http, &config.socks5, Arc::new(rules), config.proxy)
-                .await
-                .unwrap();
-        auto_proxy.run().await;
+        let h = run_http_proxy(&config.listen.http, &config.proxy.http, &rules);
+        let s = run_socks5_proxy(&config.listen.socks5, &config.proxy.socks5, &rules);
+        let _r = futures::join!(h, s);
     });
 }

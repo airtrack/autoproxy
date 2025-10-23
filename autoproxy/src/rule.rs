@@ -1,6 +1,6 @@
 use std::{
     fs::read_to_string,
-    io::{Error, ErrorKind},
+    io::{Error, ErrorKind, Result},
     net::SocketAddr,
 };
 
@@ -146,7 +146,7 @@ impl GeoIpRule {
         }
     }
 
-    async fn need_to_proxy(&self, host: &str) -> std::io::Result<RuleResult> {
+    async fn need_to_proxy(&self, host: &str) -> Result<RuleResult> {
         let addrs = net::lookup_host(host).await?;
 
         for addr in addrs {

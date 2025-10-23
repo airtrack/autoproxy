@@ -10,6 +10,8 @@ pub use udp::UdpSocket;
 pub use udp::UdpSocketBuf;
 pub use udp::UdpSocketHolder;
 
+pub use proto::Address;
+
 mod client;
 mod proto;
 mod server;

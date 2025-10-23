@@ -43,14 +43,18 @@ impl UdpSocket {
     }
 
     #[inline]
-    pub async fn send(&self, buf: &mut UdpSocketBuf, addr: SocketAddrV4) -> Result<()> {
-        self.inner.send(buf, addr, self.peer_addr).await
+    pub async fn send(&self, buf: &mut UdpSocketBuf, addr: SocketAddr) -> Result<()> {
+        if let SocketAddr::V4(addr) = addr {
+            self.inner.send(buf, addr, self.peer_addr).await
+        } else {
+            Err(Error::new(ErrorKind::Other, "socks5: unsupport IPv6"))
+        }
     }
 
     #[inline]
-    pub async fn recv(&self, buf: &mut UdpSocketBuf) -> Result<SocketAddrV4> {
+    pub async fn recv(&self, buf: &mut UdpSocketBuf) -> Result<SocketAddr> {
         let (_, addr) = self.inner.recv(buf).await?;
-        Ok(addr)
+        Ok(SocketAddr::V4(addr))
     }
 }
 
