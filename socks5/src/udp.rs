@@ -42,6 +42,10 @@ impl UdpSocket {
         Self { inner, peer_addr }
     }
 
+    pub fn peer_addr(&self) -> SocketAddr {
+        self.peer_addr
+    }
+
     #[inline]
     pub async fn send(&self, buf: &mut UdpSocketBuf, addr: SocketAddr) -> Result<()> {
         if let SocketAddr::V4(addr) = addr {

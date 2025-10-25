@@ -1,10 +1,11 @@
 use std::{
     io::{Error, ErrorKind, Result},
+    net::SocketAddr,
     sync::Arc,
 };
 
 use httpproxy::HttpProxy;
-use log::info;
+use log::{info, trace};
 use socks5::{TcpIncoming, UdpIncoming};
 use tokio::net::{TcpListener, TcpStream, UdpSocket};
 
@@ -26,15 +27,15 @@ impl AutoRules {
     {
         match self.apply_proxy_rules(host).await {
             RuleResult::Proxy => {
-                info!("Proxy - {}", host);
+                info!("proxy connect tcp {}", host);
                 f(proxy, host).await
             }
             RuleResult::Direct => {
-                info!("Direct - {}", host);
+                info!("direct connect tcp {}", host);
                 TcpStream::connect(host).await
             }
             _ => {
-                info!("Block - {}", host);
+                info!("block connect tcp {}", host);
                 Err(Error::new(ErrorKind::ConnectionRefused, "Blocked"))
             }
         }
@@ -124,30 +125,33 @@ async fn run_socks5_tcp_proxy(incoming: TcpIncoming, rules: AutoRules, proxy: &s
         .map(|_| ())
 }
 
-async fn run_socks5_udp_proxy(
-    incoming: UdpIncoming,
-    _rules: AutoRules,
-    _proxy: &str,
-) -> Result<()> {
+async fn run_socks5_udp_proxy(incoming: UdpIncoming, rules: AutoRules, proxy: &str) -> Result<()> {
     let mut buf = socks5::UdpSocketBuf::new();
     let (inbound, holder, dst) = incoming.recv_wait(&mut buf).await?;
-    let outbound = UdpSocket::bind("0.0.0.0:0").await?;
+    let outbound = UdpOutboundSocket::new(inbound.peer_addr(), rules, proxy.to_string());
 
-    outbound.send_to(buf.as_ref(), dst).await?;
-    async fn udp_send(inbound: &socks5::UdpSocket, outbound: &UdpSocket) -> Result<()> {
-        let mut buf = socks5::UdpSocketBuf::new();
-        loop {
-            let addr = inbound.recv(&mut buf).await?;
-            outbound.send_to(buf.as_ref(), addr).await?;
-        }
-    }
+    async fn udp_relay(
+        inbound: socks5::UdpSocket,
+        mut outbound: UdpOutboundSocket,
+        mut buf: socks5::UdpSocketBuf,
+        mut addr: SocketAddr,
+    ) -> Result<()> {
+        outbound.send(&mut buf, addr).await?;
 
-    async fn udp_recv(inbound: &socks5::UdpSocket, outbound: &UdpSocket) -> Result<()> {
-        let mut buf = socks5::UdpSocketBuf::new();
+        let mut buf1 = socks5::UdpSocketBuf::new();
+        let mut buf2 = socks5::UdpSocketBuf::new();
+
         loop {
-            let (len, from) = outbound.recv_from(buf.as_mut()).await?;
-            buf.set_len(len);
-            inbound.send(&mut buf, from).await?;
+            tokio::select! {
+                r = inbound.recv(&mut buf) => {
+                    addr = r?;
+                    outbound.send(&mut buf, addr).await?;
+                }
+                r = outbound.recv(&mut buf1, &mut buf2) => {
+                    let (buf, addr) = r?;
+                    inbound.send(buf, addr).await?;
+                }
+            }
         }
     }
 
@@ -155,11 +159,133 @@ async fn run_socks5_udp_proxy(
         holder.wait().await
     }
 
-    futures::try_join!(
-        udp_send(&inbound, &outbound),
-        udp_recv(&inbound, &outbound),
-        udp_holder(holder),
-    )?;
-
+    futures::try_join!(udp_relay(inbound, outbound, buf, dst), udp_holder(holder))?;
     Ok(())
+}
+
+struct UdpOutboundSocket {
+    from: SocketAddr,
+    proxy: String,
+    rules: AutoRules,
+    direct: Option<UdpSocket>,
+    socks5: Option<socks5::UdpSocket>,
+    holder: Option<socks5::UdpSocketHolder>,
+}
+
+impl UdpOutboundSocket {
+    fn new(from: SocketAddr, rules: AutoRules, proxy: String) -> Self {
+        Self {
+            from,
+            proxy,
+            rules,
+            direct: None,
+            socks5: None,
+            holder: None,
+        }
+    }
+
+    async fn send(&mut self, buf: &mut socks5::UdpSocketBuf, addr: SocketAddr) -> Result<()> {
+        match self.rules.apply_proxy_rules(&addr.to_string()).await {
+            RuleResult::Direct => {
+                if self.direct.is_none() {
+                    let socket = UdpSocket::bind("0.0.0.0:0").await?;
+                    self.direct = Some(socket);
+                    info!(
+                        "direct start udp socket [{}]: [direct {}, socks5 {}]",
+                        self.from,
+                        self.direct.is_some(),
+                        self.socks5.is_some()
+                    );
+                }
+
+                trace!("direct send udp packet [{}] to {}", self.from, addr);
+                self.direct
+                    .as_ref()
+                    .expect("udp socket was not initialized")
+                    .send_to(buf.as_ref(), addr)
+                    .await?;
+            }
+            RuleResult::Proxy => {
+                if self.socks5.is_none() {
+                    let socket = UdpSocket::bind("0.0.0.0:0").await?;
+                    let (socket, holder) = socks5::udp_associate(&self.proxy, socket).await?;
+                    self.socks5 = Some(socket);
+                    self.holder = Some(holder);
+                    info!(
+                        "socks5 start udp socket [{}]: [direct {}, socks5 {}]",
+                        self.from,
+                        self.direct.is_some(),
+                        self.socks5.is_some()
+                    );
+                }
+
+                trace!("socks5 send udp packet [{}] to {}", self.from, addr);
+                self.socks5
+                    .as_ref()
+                    .expect("socks5 udp socket was not initialized")
+                    .send(buf, addr)
+                    .await?;
+            }
+            _ => {
+                info!("block udp packet {} to {}", self.from, addr);
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn recv<'a>(
+        &mut self,
+        buf1: &'a mut socks5::UdpSocketBuf,
+        buf2: &'a mut socks5::UdpSocketBuf,
+    ) -> Result<(&'a mut socks5::UdpSocketBuf, SocketAddr)> {
+        if let Some(ref direct) = self.direct
+            && let Some(ref socks5) = self.socks5
+            && let Some(ref mut holder) = self.holder
+        {
+            tokio::select! {
+                r = recv_from_direct(direct, buf1) => {
+                    return r;
+                }
+                r = recv_from_socks5(socks5, buf2) => {
+                    return r;
+                }
+                r = holder.wait() => {
+                    r?;
+                }
+            }
+        } else if let Some(ref socks5) = self.socks5
+            && let Some(ref mut holder) = self.holder
+        {
+            tokio::select! {
+                r = recv_from_socks5(socks5, buf2) => {
+                    return r;
+                }
+                r = holder.wait() => {
+                    r?;
+                }
+            }
+        } else if let Some(ref direct) = self.direct {
+            return recv_from_direct(direct, buf1).await;
+        }
+
+        futures::future::pending().await
+    }
+}
+
+async fn recv_from_direct<'a>(
+    socket: &UdpSocket,
+    buf: &'a mut socks5::UdpSocketBuf,
+) -> Result<(&'a mut socks5::UdpSocketBuf, SocketAddr)> {
+    let (len, from) = socket.recv_from(buf.as_mut()).await?;
+    buf.set_len(len);
+    return Ok((buf, from));
+}
+
+async fn recv_from_socks5<'a>(
+    socket: &socks5::UdpSocket,
+    buf: &'a mut socks5::UdpSocketBuf,
+) -> Result<(&'a mut socks5::UdpSocketBuf, SocketAddr)> {
+    let from = socket.recv(buf).await?;
+    return Ok((buf, from));
 }
