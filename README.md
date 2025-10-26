@@ -19,12 +19,17 @@ Work with stunnel and gatewaysocks
 * [gatewaysocks](https://github.com/airtrack/gatewaysocks)
 
 ```
-    ----------------                 -------------                        -----------
-    | gatewaysocks | --- TCP/UDP --> | autoproxy | ------- TCP/UDP -----> | stunnel |
-    ----------------                 -------------    |                   -----------
-           ^                               ^          |                   -----------
-           |                               |          |--- TCP/UDP -----> |  direct |
-           |                               |                              -----------
+    ----------------                 -------------                        -------------
+    |              |                 |           |                        |           |
+    | gatewaysocks | --- TCP/UDP --> | autoproxy | ------- TCP/UDP -----> |  stunnel  |
+    |              |                 |           |    |                   |           |
+    ----------------                 -------------    |                   -------------
+           ^                               ^          |
+           |                               |          |                   -------------
+           |                               |          |                   |           |
+           |                               |          |--- TCP/UDP -----> |  direct   |
+           |                               |                              |           |
+           |                               |                              -------------
     -----------------             ------------------
     |    devices    |             |   set system   |
     |  in the same  |             | proxy settings |
