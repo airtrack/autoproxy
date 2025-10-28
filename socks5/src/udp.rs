@@ -1,13 +1,15 @@
-use std::io::{Error, ErrorKind, Result};
-use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
+use std::io::{Cursor, Error, ErrorKind, Result};
+use std::net::SocketAddr;
 
-use tokio::io::AsyncReadExt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 
 use crate::proto::*;
 
 pub struct UdpSocketBuf {
     buf: [u8; 1500],
+    header_start: usize,
+    header_len: usize,
     data_len: usize,
 }
 
@@ -15,12 +17,14 @@ impl UdpSocketBuf {
     pub fn new() -> Self {
         Self {
             buf: [0; _],
+            header_start: 0,
+            header_len: 0,
             data_len: 0,
         }
     }
 
     pub fn as_mut(&mut self) -> &mut [u8] {
-        &mut self.buf[10..]
+        &mut self.buf[22..]
     }
 
     pub fn set_len(&mut self, len: usize) {
@@ -28,7 +32,17 @@ impl UdpSocketBuf {
     }
 
     pub fn as_ref(&self) -> &[u8] {
-        &self.buf[10..10 + self.data_len]
+        &self.buf[self.header_start + self.header_len
+            ..self.header_start + self.header_len + self.data_len]
+    }
+
+    fn set_header_info(&mut self, start: usize, len: usize) {
+        self.header_start = start;
+        self.header_len = len;
+    }
+
+    fn packet_slice(&self) -> &[u8] {
+        &self.buf[self.header_start..self.header_start + self.header_len + self.data_len]
     }
 }
 
@@ -42,23 +56,20 @@ impl UdpSocket {
         Self { inner, peer_addr }
     }
 
+    #[inline]
     pub fn peer_addr(&self) -> SocketAddr {
         self.peer_addr
     }
 
     #[inline]
     pub async fn send(&self, buf: &mut UdpSocketBuf, addr: SocketAddr) -> Result<()> {
-        if let SocketAddr::V4(addr) = addr {
-            self.inner.send(buf, addr, self.peer_addr).await
-        } else {
-            Err(Error::new(ErrorKind::Other, "socks5: unsupport IPv6"))
-        }
+        self.inner.send(buf, addr, self.peer_addr).await
     }
 
     #[inline]
     pub async fn recv(&self, buf: &mut UdpSocketBuf) -> Result<SocketAddr> {
         let (_, addr) = self.inner.recv(buf).await?;
-        Ok(SocketAddr::V4(addr))
+        Ok(addr)
     }
 }
 
@@ -74,37 +85,49 @@ impl UdpSocketInner {
     pub(crate) async fn send(
         &self,
         buf: &mut UdpSocketBuf,
-        addr: SocketAddrV4,
+        addr: SocketAddr,
         peer_addr: SocketAddr,
     ) -> Result<()> {
-        let len = buf.data_len;
-        let buf = &mut buf.buf;
+        let (header_start, header_len) = match addr {
+            SocketAddr::V4(_) => (12, 10),
+            SocketAddr::V6(_) => (0, 22),
+        };
 
-        buf[0] = 0;
-        buf[1] = 0;
-        buf[2] = 0;
-        buf[3] = ATYP_IPV4;
-        buf[4..8].copy_from_slice(&addr.ip().octets());
-        buf[8..10].copy_from_slice(&addr.port().to_be_bytes());
+        let header_slice = &mut buf.buf[header_start..header_start + header_len];
+        let mut cursor = Cursor::new(header_slice);
 
-        self.socket.send_to(&buf[..10 + len], peer_addr).await?;
+        cursor.write_u8(0).await?;
+        cursor.write_u8(0).await?;
+        cursor.write_u8(0).await?;
+
+        let address = Address::Ip(addr);
+        address.write(&mut cursor).await?;
+
+        buf.set_header_info(header_start, header_len);
+        self.socket.send_to(buf.packet_slice(), peer_addr).await?;
         Ok(())
     }
 
-    pub(crate) async fn recv(&self, buf: &mut UdpSocketBuf) -> Result<(SocketAddr, SocketAddrV4)> {
+    pub(crate) async fn recv(&self, buf: &mut UdpSocketBuf) -> Result<(SocketAddr, SocketAddr)> {
         loop {
             let (n, from) = self.socket.recv_from(&mut buf.buf).await?;
-            if n <= 10 || buf.buf[3] != ATYP_IPV4 {
-                continue;
+            let mut cursor = Cursor::new(&buf.buf[..n]);
+
+            cursor.set_position(3);
+
+            let address = Address::read(&mut cursor).await?;
+            let header_len = cursor.position() as usize;
+
+            match address {
+                Address::Ip(addr) => {
+                    buf.set_header_info(0, header_len);
+                    buf.set_len(n - header_len);
+                    return Ok((from, addr));
+                }
+                Address::Host(_) => {
+                    continue;
+                }
             }
-
-            buf.set_len(n - 10);
-
-            let buf = &mut buf.buf;
-            let ip = Ipv4Addr::new(buf[4], buf[5], buf[6], buf[7]);
-            let port = u16::from_be_bytes(buf[8..10].try_into().unwrap());
-
-            return Ok((from, SocketAddrV4::new(ip, port)));
         }
     }
 }

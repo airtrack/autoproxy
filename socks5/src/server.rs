@@ -62,7 +62,7 @@ impl UdpIncoming {
     ) -> Result<(UdpSocket, UdpSocketHolder, SocketAddr)> {
         let (from, addr) = self.socket.recv(buf).await?;
         let socket = UdpSocket::from(self.socket, from);
-        Ok((socket, self.holder, SocketAddr::V4(addr)))
+        Ok((socket, self.holder, addr))
     }
 }
 
