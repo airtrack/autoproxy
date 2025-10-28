@@ -4,10 +4,12 @@ use std::{
     sync::Arc,
 };
 
-use httpproxy::HttpProxy;
 use log::{info, trace};
 use socks5::{TcpIncoming, UdpIncoming};
-use tokio::net::{TcpListener, TcpStream, UdpSocket};
+use tokio::{
+    io::{AsyncWriteExt, copy_bidirectional},
+    net::{TcpListener, TcpStream, UdpSocket},
+};
 
 use crate::rule::{Rule, RuleResult};
 
@@ -78,14 +80,19 @@ pub async fn run_socks5_proxy(listen: &str, proxy: &String, rules: &AutoRules) -
 }
 
 async fn run_http_proxy_connection(stream: TcpStream, rules: AutoRules, proxy: &str) -> Result<()> {
-    let mut inbound = HttpProxy::accept(stream).await?;
+    let inbound = httpproxy::accept(stream).await?;
     let mut outbound = rules
         .connect(proxy, inbound.host(), async |proxy, host| {
-            HttpProxy::connect(proxy, host).await
+            httpproxy::connect(proxy, host).await
         })
         .await?;
-    inbound
-        .copy_bidirectional_tcp_stream(&mut outbound)
+
+    let (mut inbound, req) = inbound.response_200().await?;
+    if let Some(req) = req {
+        outbound.write_all(&req).await?;
+    }
+
+    copy_bidirectional(&mut inbound, &mut outbound)
         .await
         .map(|_| ())
 }
@@ -120,7 +127,7 @@ async fn run_socks5_tcp_proxy(incoming: TcpIncoming, rules: AutoRules, proxy: &s
 
     let mut inbound = incoming.reply_ok(outbound.local_addr()?).await?;
 
-    tokio::io::copy_bidirectional(&mut inbound, &mut outbound)
+    copy_bidirectional(&mut inbound, &mut outbound)
         .await
         .map(|_| ())
 }
