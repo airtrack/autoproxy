@@ -78,11 +78,11 @@ impl Acceptor {
     async fn accept(mut self) -> Result<AcceptResult> {
         self.select_method().await?;
 
-        let mut req = [0u8; 4];
+        let mut req = [0u8; 3];
         self.stream.read_exact(&mut req).await?;
         match req[1] {
-            CMD_CONNECT => self.accept_connect(req[3]).await,
-            CMD_UDP_ASSOCIATE => self.accept_udp_associate(req[3]).await,
+            CMD_CONNECT => self.accept_connect().await,
+            CMD_UDP_ASSOCIATE => self.accept_udp_associate().await,
             c => {
                 let error = format!("socks5: unknown CMD {}", c);
                 Err(Error::new(ErrorKind::Other, error))
@@ -90,14 +90,14 @@ impl Acceptor {
         }
     }
 
-    async fn accept_connect(mut self, atype: u8) -> Result<AcceptResult> {
-        let addr = self.parse_addr(atype).await?;
+    async fn accept_connect(mut self) -> Result<AcceptResult> {
+        let addr = Address::read(&mut self.stream).await?;
         let incoming = TcpIncoming::new(self, addr);
         Ok(AcceptResult::Connect(incoming))
     }
 
-    async fn accept_udp_associate(mut self, atype: u8) -> Result<AcceptResult> {
-        let _ = self.parse_addr(atype).await?;
+    async fn accept_udp_associate(mut self) -> Result<AcceptResult> {
+        let _ = Address::read(&mut self.stream).await?;
         let socket = tokio::net::UdpSocket::bind("0.0.0.0:0").await?;
         self.reply(true, socket.local_addr()?).await?;
 
@@ -113,21 +113,10 @@ impl Acceptor {
         } else {
             REP_HOST_UNREACHABLE
         };
-        let addr_type = if bind.is_ipv4() { ATYP_IPV4 } else { ATYP_IPV6 };
 
-        let ack = [VER, rep, 0, addr_type];
+        let ack = [VER, rep, 0];
         self.stream.write_all(&ack).await?;
-
-        match bind {
-            SocketAddr::V4(addr) => {
-                self.stream.write_all(&addr.ip().octets()).await?;
-                self.stream.write_u16(addr.port()).await
-            }
-            SocketAddr::V6(addr) => {
-                self.stream.write_all(&addr.ip().octets()).await?;
-                self.stream.write_u16(addr.port()).await
-            }
-        }
+        Address::Ip(bind).write(&mut self.stream).await
     }
 
     async fn select_method(&mut self) -> Result<()> {
@@ -149,34 +138,5 @@ impl Acceptor {
 
         let ack = [VER, NO_AUTH];
         self.stream.write_all(&ack).await
-    }
-
-    async fn parse_addr(&mut self, atype: u8) -> Result<Address> {
-        match atype {
-            ATYP_IPV4 => {
-                let ip = self.stream.read_u32().await?;
-                let port = self.stream.read_u16().await?;
-                let ip = Ipv4Addr::from_bits(ip);
-                let addr = SocketAddrV4::new(ip, port);
-                Ok(Address::Ip(SocketAddr::V4(addr)))
-            }
-            ATYP_DOMAIN => {
-                let len = self.stream.read_u8().await?;
-                let mut domain = vec![0u8; len as usize];
-                self.stream.read_exact(&mut domain).await?;
-                let port = self.stream.read_u16().await?;
-                let host = String::from_utf8(domain)
-                    .map_err(|_| Error::new(ErrorKind::Other, "socks5: invalid domain"))?;
-                Ok(Address::Host(format!("{}:{}", host, port)))
-            }
-            ATYP_IPV6 => {
-                let error = format!("socks5: unsupport IPv6");
-                Err(Error::new(ErrorKind::Other, error))
-            }
-            addr_type => {
-                let error = format!("socks5: unknown addr type {}", addr_type);
-                Err(Error::new(ErrorKind::Other, error))
-            }
-        }
     }
 }
