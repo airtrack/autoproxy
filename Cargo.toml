@@ -5,8 +5,8 @@ authors = ["airtrack <airtrack.sk@gmail.com>"]
 edition = "2024"
 
 [dependencies]
-socks5 = { git = "https://github.com/airtrack/sproxy.git" }
-httpproxy = { git = "https://github.com/airtrack/sproxy.git" }
+socks5 = { git = "https://github.com/airtrack/sproxy.git", tag = "0.1.0" }
+httpproxy = { git = "https://github.com/airtrack/sproxy.git", tag = "0.1.0" }
 tokio = { version = "1.38.0", features = ["full"] }
 tokio-stream = { version = "0.1", features = ["net"] }
 maxminddb = "0.17"
