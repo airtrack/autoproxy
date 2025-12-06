@@ -37,7 +37,7 @@ impl AutoRules {
                 TcpStream::connect(host).await
             }
             _ => {
-                info!("block connect tcp {}", host);
+                trace!("block connect tcp {}", host);
                 Err(Error::new(ErrorKind::ConnectionRefused, "Blocked"))
             }
         }

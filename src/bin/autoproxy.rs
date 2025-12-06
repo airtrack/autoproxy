@@ -32,12 +32,41 @@ struct Proxy {
     socks5: String,
 }
 
+#[cfg(target_os = "macos")]
+#[derive(serde::Deserialize, Default)]
+struct MacOsLogging {
+    enable: bool,
+    subsystem: String,
+}
+
 #[derive(Deserialize)]
 struct Config {
     listen: Listen,
     proxy: Proxy,
     mmdb: String,
     rules: Vec<RuleConfig>,
+
+    #[cfg(target_os = "macos")]
+    #[serde(default)]
+    macos_logging: MacOsLogging,
+}
+
+fn init_log(_config: &Config) {
+    #[cfg(target_os = "macos")]
+    if _config.macos_logging.enable {
+        oslog::OsLogger::new(&_config.macos_logging.subsystem)
+            .level_filter(log::LevelFilter::Info)
+            .category_level_filter("", log::LevelFilter::Info)
+            .init()
+            .unwrap();
+        return;
+    }
+
+    env_logger::builder()
+        .format_timestamp(None)
+        .filter_level(log::LevelFilter::Info)
+        .parse_default_env()
+        .init();
 }
 
 fn main() {
@@ -47,14 +76,10 @@ fn main() {
         return;
     }
 
-    env_logger::builder()
-        .format_timestamp(None)
-        .filter_level(log::LevelFilter::Info)
-        .parse_default_env()
-        .init();
-
     let content = String::from_utf8(fs::read(&args.nth(1).unwrap()).unwrap()).unwrap();
     let config: Config = toml::from_str(&content).unwrap();
+
+    init_log(&config);
 
     let mut rules = Vec::<Box<dyn Rule>>::new();
 
