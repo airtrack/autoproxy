@@ -8,7 +8,6 @@ use autoproxy::rule::{
 
 use log::info;
 use serde::Deserialize;
-use tokio::runtime::Runtime;
 
 #[derive(Deserialize)]
 #[serde(tag = "type")]
@@ -69,7 +68,8 @@ fn init_log(_config: &Config) {
         .init();
 }
 
-fn main() {
+#[tokio::main]
+async fn main() {
     let mut args = env::args();
     if args.len() != 2 {
         println!("Usage: {} config.toml", args.nth(0).unwrap());
@@ -115,10 +115,7 @@ fn main() {
 
     let rules = AutoRules::new(Arc::new(rules));
 
-    let rt = Runtime::new().unwrap();
-    rt.block_on(async move {
-        let h = run_http_proxy(&config.listen.http, &config.proxy.http, &rules);
-        let s = run_socks5_proxy(&config.listen.socks5, &config.proxy.socks5, &rules);
-        let _r = futures::join!(h, s);
-    });
+    let h = run_http_proxy(&config.listen.http, &config.proxy.http, &rules);
+    let s = run_socks5_proxy(&config.listen.socks5, &config.proxy.socks5, &rules);
+    let _r = futures::join!(h, s);
 }
