@@ -1,7 +1,6 @@
 use std::{
     io::{Error, ErrorKind, Result},
     net::SocketAddr,
-    sync::Arc,
 };
 
 use log::{info, trace};
@@ -11,51 +10,9 @@ use tokio::{
     net::{TcpListener, TcpStream, UdpSocket},
 };
 
-use crate::rule::{Rule, RuleResult};
+use crate::rule::{AsyncAutoRules, RuleResult};
 
-#[derive(Clone)]
-pub struct AutoRules {
-    rules: Arc<Vec<Box<dyn Rule>>>,
-}
-
-impl AutoRules {
-    pub fn new(rules: Arc<Vec<Box<dyn Rule>>>) -> Self {
-        Self { rules }
-    }
-
-    async fn connect<F>(&self, proxy: &str, host: &str, f: F) -> Result<TcpStream>
-    where
-        F: AsyncFnOnce(&str, &str) -> Result<TcpStream>,
-    {
-        match self.apply_proxy_rules(host).await {
-            RuleResult::Proxy => {
-                info!("proxy connect tcp {}", host);
-                f(proxy, host).await
-            }
-            RuleResult::Direct => {
-                info!("direct connect tcp {}", host);
-                TcpStream::connect(host).await
-            }
-            _ => {
-                trace!("block connect tcp {}", host);
-                Err(Error::new(ErrorKind::ConnectionRefused, "Blocked"))
-            }
-        }
-    }
-
-    async fn apply_proxy_rules(&self, host: &str) -> RuleResult {
-        for rule in self.rules.iter() {
-            match rule.find_proxy_rule(host).await {
-                RuleResult::NotFound => {}
-                r => return r,
-            }
-        }
-
-        RuleResult::Direct
-    }
-}
-
-pub async fn run_http_proxy(listen: &str, proxy: &String, rules: &AutoRules) -> Result<()> {
+pub async fn run_http_proxy(listen: &str, proxy: &String, rules: &AsyncAutoRules) -> Result<()> {
     let listener = TcpListener::bind(listen).await?;
 
     loop {
@@ -67,7 +24,7 @@ pub async fn run_http_proxy(listen: &str, proxy: &String, rules: &AutoRules) -> 
     }
 }
 
-pub async fn run_socks5_proxy(listen: &str, proxy: &String, rules: &AutoRules) -> Result<()> {
+pub async fn run_socks5_proxy(listen: &str, proxy: &String, rules: &AsyncAutoRules) -> Result<()> {
     let listener = TcpListener::bind(listen).await?;
 
     loop {
@@ -79,13 +36,36 @@ pub async fn run_socks5_proxy(listen: &str, proxy: &String, rules: &AutoRules) -
     }
 }
 
-async fn run_http_proxy_connection(stream: TcpStream, rules: AutoRules, proxy: &str) -> Result<()> {
+async fn connect<F>(rules: &AsyncAutoRules, proxy: &str, host: &str, f: F) -> Result<TcpStream>
+where
+    F: AsyncFnOnce(&str, &str) -> Result<TcpStream>,
+{
+    match rules.apply_proxy_rules(host).await {
+        RuleResult::Proxy => {
+            info!("proxy connect tcp {}", host);
+            f(proxy, host).await
+        }
+        RuleResult::Direct => {
+            info!("direct connect tcp {}", host);
+            TcpStream::connect(host).await
+        }
+        _ => {
+            trace!("block connect tcp {}", host);
+            Err(Error::new(ErrorKind::ConnectionRefused, "Blocked"))
+        }
+    }
+}
+
+async fn run_http_proxy_connection(
+    stream: TcpStream,
+    rules: AsyncAutoRules,
+    proxy: &str,
+) -> Result<()> {
     let inbound = httpproxy::accept(stream).await?;
-    let mut outbound = rules
-        .connect(proxy, inbound.host(), async |proxy, host| {
-            httpproxy::connect(proxy, host).await
-        })
-        .await?;
+    let mut outbound = connect(&rules, proxy, inbound.host(), async |proxy, host| {
+        httpproxy::connect(proxy, host).await
+    })
+    .await?;
 
     let (mut inbound, req) = inbound.response_200().await?;
     if let Some(req) = req {
@@ -99,7 +79,7 @@ async fn run_http_proxy_connection(stream: TcpStream, rules: AutoRules, proxy: &
 
 async fn run_socks5_proxy_connection(
     stream: TcpStream,
-    rules: AutoRules,
+    rules: AsyncAutoRules,
     proxy: &str,
 ) -> Result<()> {
     match socks5::accept(stream).await? {
@@ -112,18 +92,21 @@ async fn run_socks5_proxy_connection(
     }
 }
 
-async fn run_socks5_tcp_proxy(incoming: TcpIncoming, rules: AutoRules, proxy: &str) -> Result<()> {
+async fn run_socks5_tcp_proxy(
+    incoming: TcpIncoming,
+    rules: AsyncAutoRules,
+    proxy: &str,
+) -> Result<()> {
     let host = match incoming.destination() {
         socks5::Address::Host(host) => host.clone(),
         socks5::Address::Ip(addr) => addr.to_string(),
     };
     let destination = incoming.destination().clone();
 
-    let mut outbound = rules
-        .connect(proxy, &host, async |proxy, _| {
-            socks5::connect(proxy, destination).await
-        })
-        .await?;
+    let mut outbound = connect(&rules, proxy, &host, async |proxy, _| {
+        socks5::connect(proxy, destination).await
+    })
+    .await?;
 
     let mut inbound = incoming.reply_ok(outbound.local_addr()?).await?;
 
@@ -132,7 +115,11 @@ async fn run_socks5_tcp_proxy(incoming: TcpIncoming, rules: AutoRules, proxy: &s
         .map(|_| ())
 }
 
-async fn run_socks5_udp_proxy(incoming: UdpIncoming, rules: AutoRules, proxy: &str) -> Result<()> {
+async fn run_socks5_udp_proxy(
+    incoming: UdpIncoming,
+    rules: AsyncAutoRules,
+    proxy: &str,
+) -> Result<()> {
     let mut buf = socks5::UdpSocketBuf::new();
     let (inbound, holder, dst) = incoming.recv_wait(&mut buf).await?;
     let outbound = UdpOutboundSocket::new(inbound.peer_addr(), rules, proxy.to_string());
@@ -173,14 +160,14 @@ async fn run_socks5_udp_proxy(incoming: UdpIncoming, rules: AutoRules, proxy: &s
 struct UdpOutboundSocket {
     from: SocketAddr,
     proxy: String,
-    rules: AutoRules,
+    rules: AsyncAutoRules,
     direct: Option<UdpSocket>,
     socks5: Option<socks5::UdpSocket>,
     holder: Option<socks5::UdpSocketHolder>,
 }
 
 impl UdpOutboundSocket {
-    fn new(from: SocketAddr, rules: AutoRules, proxy: String) -> Self {
+    fn new(from: SocketAddr, rules: AsyncAutoRules, proxy: String) -> Self {
         Self {
             from,
             proxy,

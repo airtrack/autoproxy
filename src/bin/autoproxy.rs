@@ -1,23 +1,10 @@
-use std::sync::Arc;
 use std::{env, fs};
 
-use autoproxy::proxy::{AutoRules, run_http_proxy, run_socks5_proxy};
-use autoproxy::rule::{
-    DirectRule, DomainKeywordRule, DomainSuffixSetRule, GeoIpRule, IpNetRule, Rule, RuleResult,
-};
+use autoproxy::dns::run_dns_server;
+use autoproxy::proxy::{run_http_proxy, run_socks5_proxy};
 
-use log::info;
+use autoproxy::rule::{RuleConfig, load_rules};
 use serde::Deserialize;
-
-#[derive(Deserialize)]
-#[serde(tag = "type")]
-enum RuleConfig {
-    Direct { rule: RuleResult },
-    IpNet { ipnet: String, rule: RuleResult },
-    DomainKeyword { keyword: String, rule: RuleResult },
-    DomainSuffixSet { file: String, rule: RuleResult },
-    GeoIp { country: String, rule: RuleResult },
-}
 
 #[derive(Deserialize)]
 struct Listen {
@@ -31,6 +18,13 @@ struct Proxy {
     socks5: String,
 }
 
+#[derive(Deserialize)]
+struct DnsConfig {
+    listen: String,
+    upstream_direct: String,
+    upstream_proxy: String,
+}
+
 #[cfg(target_os = "macos")]
 #[derive(serde::Deserialize, Default)]
 struct MacOsLogging {
@@ -42,6 +36,7 @@ struct MacOsLogging {
 struct Config {
     listen: Listen,
     proxy: Proxy,
+    dns: DnsConfig,
     mmdb: String,
     rules: Vec<RuleConfig>,
 
@@ -80,42 +75,16 @@ async fn main() {
     let config: Config = toml::from_str(&content).unwrap();
 
     init_log(&config);
+    let (rules, async_rules) = load_rules(config.rules, &config.mmdb);
 
-    let mut rules = Vec::<Box<dyn Rule>>::new();
-
-    for rule in config.rules {
-        match rule {
-            RuleConfig::Direct { rule } => {
-                info!("DirectRule {:?}", rule);
-                let direct = DirectRule::new(rule);
-                rules.push(Box::new(direct));
-            }
-            RuleConfig::IpNet { ipnet, rule } => {
-                info!("IpNetRule {} {:?}", ipnet, rule);
-                let net = IpNetRule::new(&ipnet, rule);
-                rules.push(Box::new(net));
-            }
-            RuleConfig::DomainKeyword { keyword, rule } => {
-                info!("DomainKeyword {} {:?}", keyword, rule);
-                let keyword = DomainKeywordRule::new(keyword, rule);
-                rules.push(Box::new(keyword));
-            }
-            RuleConfig::DomainSuffixSet { file, rule } => {
-                info!("DomainSuffixSet {} {:?}", file, rule);
-                let set = DomainSuffixSetRule::new(&file, rule);
-                rules.push(Box::new(set));
-            }
-            RuleConfig::GeoIp { country, rule } => {
-                info!("GeoIp {} {:?}", country, rule);
-                let geoip = GeoIpRule::new(&config.mmdb, country, rule);
-                rules.push(Box::new(geoip));
-            }
-        }
-    }
-
-    let rules = AutoRules::new(Arc::new(rules));
-
-    let h = run_http_proxy(&config.listen.http, &config.proxy.http, &rules);
-    let s = run_socks5_proxy(&config.listen.socks5, &config.proxy.socks5, &rules);
-    let _r = futures::join!(h, s);
+    let h = run_http_proxy(&config.listen.http, &config.proxy.http, &async_rules);
+    let s = run_socks5_proxy(&config.listen.socks5, &config.proxy.socks5, &async_rules);
+    let d = run_dns_server(
+        &config.dns.listen,
+        &config.dns.upstream_direct,
+        &config.dns.upstream_proxy,
+        &config.proxy.socks5,
+        &rules,
+    );
+    let _r = futures::join!(h, s, d);
 }
