@@ -100,6 +100,18 @@ struct DnsHandler {
     next_id: u16,
 }
 
+fn get_system_dns() -> anyhow::Result<SocketAddr> {
+    let (config, _) = hickory_resolver::system_conf::read_system_conf()
+        .map_err(|e| anyhow!("Failed to read system DNS config: {}", e))?;
+
+    let ns = config
+        .name_servers()
+        .first()
+        .ok_or_else(|| anyhow!("No system DNS servers found"))?;
+
+    Ok(ns.socket_addr)
+}
+
 impl DnsHandler {
     async fn new(
         listen: &str,
@@ -109,8 +121,14 @@ impl DnsHandler {
         rules: &AutoRules,
     ) -> anyhow::Result<Self> {
         let socket = UdpSocket::bind(listen).await?;
-        let upstream_direct: SocketAddr = upstream_direct.parse()?;
-        let upstream_proxy: SocketAddr = upstream_proxy.parse()?;
+        let upstream_direct = if upstream_direct == "system" {
+            get_system_dns().inspect(|addr| {
+                info!("Using system DNS: {addr}");
+            })?
+        } else {
+            upstream_direct.parse()?
+        };
+        let upstream_proxy = upstream_proxy.parse::<SocketAddr>()?;
         let direct_socket = UdpSocket::bind("0.0.0.0:0").await?;
 
         Ok(Self {
