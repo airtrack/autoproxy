@@ -4,6 +4,7 @@ use autoproxy::dns::run_dns_server;
 use autoproxy::proxy::{run_http_proxy, run_socks5_proxy};
 
 use autoproxy::rule::{RuleConfig, load_rules};
+use futures::TryFutureExt;
 use serde::Deserialize;
 
 #[derive(Deserialize)]
@@ -75,10 +76,12 @@ async fn main() {
     let config: Config = toml::from_str(&content).unwrap();
 
     init_log(&config);
-    let (rules, async_rules) = load_rules(config.rules, &config.mmdb);
+    let (rules, async_rules) = load_rules(config.rules, &config.mmdb).unwrap();
 
-    let h = run_http_proxy(&config.listen.http, &config.proxy.http, &async_rules);
-    let s = run_socks5_proxy(&config.listen.socks5, &config.proxy.socks5, &async_rules);
+    let h = run_http_proxy(&config.listen.http, &config.proxy.http, &async_rules)
+        .map_err(anyhow::Error::from);
+    let s = run_socks5_proxy(&config.listen.socks5, &config.proxy.socks5, &async_rules)
+        .map_err(anyhow::Error::from);
     let d = run_dns_server(
         &config.dns.listen,
         &config.dns.upstream_direct,
@@ -86,5 +89,5 @@ async fn main() {
         &config.proxy.socks5,
         &rules,
     );
-    let _r = futures::join!(h, s, d);
+    futures::try_join!(h, s, d).unwrap();
 }

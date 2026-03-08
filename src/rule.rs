@@ -59,9 +59,9 @@ pub struct IpNetRule {
 }
 
 impl IpNetRule {
-    pub fn new(ip_net: &str, rule: RuleResult) -> Self {
-        let net = ip_net.parse().unwrap();
-        Self { net, rule }
+    pub fn new(ip_net: &str, rule: RuleResult) -> anyhow::Result<Self> {
+        let net = ip_net.parse()?;
+        Ok(Self { net, rule })
     }
 
     fn apply_proxy_rule(&self, host: &str) -> RuleResult {
@@ -129,17 +129,14 @@ pub struct DomainSuffixSetRule {
 }
 
 impl DomainSuffixSetRule {
-    pub fn new(file: &str, rule: RuleResult) -> Self {
-        let content = read_to_string(file).unwrap();
+    pub fn new(file: &str, rule: RuleResult) -> anyhow::Result<Self> {
+        let content = read_to_string(file)?;
         let lines = content.lines().filter(|line| !line.starts_with('#'));
+        let ac = AhoCorasick::builder()
+            .ascii_case_insensitive(true)
+            .build(lines)?;
 
-        Self {
-            ac: AhoCorasick::builder()
-                .ascii_case_insensitive(true)
-                .build(lines)
-                .unwrap(),
-            rule,
-        }
+        Ok(Self { ac, rule })
     }
 
     fn apply_proxy_rule(&self, host: &str) -> RuleResult {
@@ -180,13 +177,13 @@ pub struct GeoIpRule {
 }
 
 impl GeoIpRule {
-    pub fn new(mmdb_path: &str, country: String, rule: RuleResult) -> Self {
-        let mmdb = Reader::open_readfile(mmdb_path).unwrap();
-        Self {
+    pub fn new(mmdb_path: &str, country: String, rule: RuleResult) -> anyhow::Result<Self> {
+        let mmdb = Reader::open_readfile(mmdb_path)?;
+        Ok(Self {
             mmdb,
             country,
             rule,
-        }
+        })
     }
 
     async fn need_to_proxy(&self, host: &str) -> Result<RuleResult> {
@@ -273,7 +270,10 @@ pub enum RuleConfig {
     GeoIp { country: String, rule: RuleResult },
 }
 
-pub fn load_rules(config: Vec<RuleConfig>, mmdb_path: &str) -> (AutoRules, AsyncAutoRules) {
+pub fn load_rules(
+    config: Vec<RuleConfig>,
+    mmdb_path: &str,
+) -> anyhow::Result<(AutoRules, AsyncAutoRules)> {
     let mut rules = Vec::<Arc<dyn Rule>>::new();
     let mut async_rules = Vec::<Arc<dyn AsyncRule>>::new();
 
@@ -287,7 +287,8 @@ pub fn load_rules(config: Vec<RuleConfig>, mmdb_path: &str) -> (AutoRules, Async
             }
             RuleConfig::IpNet { ipnet, rule } => {
                 info!("IpNetRule {} {:?}", ipnet, rule);
-                let net = Arc::new(IpNetRule::new(&ipnet, rule));
+                let ip_net = IpNetRule::new(&ipnet, rule)?;
+                let net = Arc::new(ip_net);
                 rules.push(net.clone());
                 async_rules.push(net);
             }
@@ -299,13 +300,14 @@ pub fn load_rules(config: Vec<RuleConfig>, mmdb_path: &str) -> (AutoRules, Async
             }
             RuleConfig::DomainSuffixSet { file, rule } => {
                 info!("DomainSuffixSet {} {:?}", file, rule);
-                let set = Arc::new(DomainSuffixSetRule::new(&file, rule));
+                let suffix_set = DomainSuffixSetRule::new(&file, rule)?;
+                let set = Arc::new(suffix_set);
                 rules.push(set.clone());
                 async_rules.push(set);
             }
             RuleConfig::GeoIp { country, rule } => {
                 info!("GeoIp {} {:?}", country, rule);
-                let geoip = GeoIpRule::new(mmdb_path, country, rule);
+                let geoip = GeoIpRule::new(mmdb_path, country, rule)?;
                 async_rules.push(Arc::new(geoip));
             }
         }
@@ -314,5 +316,5 @@ pub fn load_rules(config: Vec<RuleConfig>, mmdb_path: &str) -> (AutoRules, Async
     let rules = AutoRules::new(Arc::new(rules));
     let async_rules = AsyncAutoRules::new(Arc::new(async_rules));
 
-    (rules, async_rules)
+    Ok((rules, async_rules))
 }
