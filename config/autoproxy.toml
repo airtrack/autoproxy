@@ -1,33 +1,39 @@
 listen = { http = "127.0.0.1:8080", socks5 = "127.0.0.1:1080" }
 proxy = { http = "127.0.0.1:18080", socks5 = "127.0.0.1:11080" }
 dns = { listen = "127.0.0.1:55353", upstream_direct = "system", upstream_proxy = "8.8.8.8:53" }
-mmdb = "Country.mmdb"
 
-[[rules]]
-type = "IpNet"
-ipnet = "127.0.0.0/8"
-rule = "Direct"
+# suffix_domains.txt:
+# ```
+# cn
+# example.com
+# ```
+#
+# domain_sets = [
+#     { name = "default", file = "suffix_domains.txt" }
+# ]
 
-[[rules]]
-type = "IpNet"
-ipnet = "10.0.0.0/8"
-rule = "Direct"
+# mmdb_sets = [
+#     { name = "default", file = "Country.mmdb" }
+# ]
 
-[[rules]]
-type = "DomainKeyword"
-keyword = "icloud"
-rule = "Direct"
+# optional: the global mmdb file
+# mmdb = "Country.mmdb"
 
-[[rules]]
-type = "DomainKeyword"
-keyword = "apple"
-rule = "Direct"
+rules = [
+    { type = "IpNet", ipnet = "127.0.0.0/8", rule = "Direct" },
+    { type = "IpNet", ipnet = "10.0.0.0/8", rule = "Direct" },
+    { type = "DomainKeyword", keyword = "apple", rule = "Direct" },
+    { type = "DomainKeyword", keyword = "icloud", rule = "Direct" },
 
-[[rules]]
-type = "GeoIp"
-country = "CN"
-rule = "Direct"
+    # use the suffix domain file associated with the name `default` in domain_sets
+    # { type = "DomainSuffixSet", name = "default", rule = "Proxy" },
+    # use the suffix_domains.txt file directly
+    # { type = "DomainSuffixSet", file = "suffix_domains.txt", rule = "Proxy" },
 
-[[rules]]
-type = "Direct"
-rule = "Proxy"
+    # use the global mmdb file
+    # { type = "GeoIp", country = "CN", rule = "Direct" },
+    # use the mmdb file associated with the name `default` in mmdb_sets
+    # { type = "GeoIp", name = "default", country = "CN", rule = "Direct" },
+
+    { type = "Direct", rule = "Proxy" }
+]

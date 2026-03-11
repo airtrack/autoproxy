@@ -2,8 +2,7 @@ use std::{env, fs};
 
 use autoproxy::dns::run_dns_server;
 use autoproxy::proxy::{run_http_proxy, run_socks5_proxy};
-
-use autoproxy::rule::{RuleConfig, load_rules};
+use autoproxy::rule::{RulesConfig, load_rules};
 use futures::TryFutureExt;
 use serde::Deserialize;
 
@@ -38,8 +37,9 @@ struct Config {
     listen: Listen,
     proxy: Proxy,
     dns: DnsConfig,
-    mmdb: String,
-    rules: Vec<RuleConfig>,
+
+    #[serde(flatten)]
+    rules: RulesConfig,
 
     #[cfg(target_os = "macos")]
     #[serde(default)]
@@ -76,7 +76,7 @@ async fn main() {
     let config: Config = toml::from_str(&content).unwrap();
 
     init_log(&config);
-    let (rules, async_rules) = load_rules(config.rules, &config.mmdb).unwrap();
+    let (rules, async_rules) = load_rules(config.rules).unwrap();
 
     let h = run_http_proxy(&config.listen.http, &config.proxy.http, &async_rules)
         .map_err(anyhow::Error::from);
