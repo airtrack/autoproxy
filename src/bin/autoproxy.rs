@@ -26,7 +26,7 @@ struct DnsConfig {
 }
 
 #[cfg(target_os = "macos")]
-#[derive(serde::Deserialize, Default)]
+#[derive(serde::Deserialize)]
 struct MacOsLogging {
     enable: bool,
     subsystem: String,
@@ -42,19 +42,20 @@ struct Config {
     rules: RulesConfig,
 
     #[cfg(target_os = "macos")]
-    #[serde(default)]
-    macos_logging: MacOsLogging,
+    macos_logging: Option<MacOsLogging>,
 }
 
 fn init_log(_config: &Config) {
     #[cfg(target_os = "macos")]
-    if _config.macos_logging.enable {
-        oslog::OsLogger::new(&_config.macos_logging.subsystem)
-            .level_filter(log::LevelFilter::Info)
-            .category_level_filter("", log::LevelFilter::Info)
-            .init()
-            .unwrap();
-        return;
+    if let Some(ref macos_logging) = _config.macos_logging {
+        if macos_logging.enable {
+            oslog::OsLogger::new(&macos_logging.subsystem)
+                .level_filter(log::LevelFilter::Info)
+                .category_level_filter("", log::LevelFilter::Info)
+                .init()
+                .unwrap();
+            return;
+        }
     }
 
     env_logger::builder()
