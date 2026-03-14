@@ -3,6 +3,10 @@ AutoProxy
 
 Auto choose proxy or not by rules.
 
+* TCP connections are automatically proxied or directly connected according to the rules.
+* UDP packets are sent directly to the destination address or via a proxy, based on matching rules for the destination address.
+* DNS server, according to the rules, directly resolves to the upstream DNS or goes through a proxy to resolve to the upstream DNS.
+
 Usage
 -----
 
