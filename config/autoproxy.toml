@@ -2,6 +2,10 @@ listen = { http = "127.0.0.1:8080", socks5 = "127.0.0.1:1080" }
 proxy = { http = "127.0.0.1:18080", socks5 = "127.0.0.1:11080" }
 dns = { listen = "127.0.0.1:55353", upstream_direct = "system", upstream_proxy = "8.8.8.8:53" }
 
+# optional: hosts files, same format as /etc/hosts
+# hosts_ipv4 = "config/hosts4.txt"
+# hosts_ipv6 = "config/hosts6.txt"
+
 # suffix_domains.txt:
 # ```
 # cn

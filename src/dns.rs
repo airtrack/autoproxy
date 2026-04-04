@@ -1,13 +1,19 @@
 use std::collections::HashMap;
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::time::{Duration, Instant};
 
 use anyhow::anyhow;
-use hickory_proto::op::{Message, OpCode};
+use hickory_proto::{
+    op::{Message, MessageType, OpCode, Query, ResponseCode},
+    rr::{RData, Record, RecordType},
+};
 use log::{error, info};
 use tokio::net::UdpSocket;
 
-use crate::rule::{AutoRules, RuleResult};
+use crate::{
+    hosts::Hosts,
+    rule::{AutoRules, RuleResult},
+};
 
 const DNS_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 const CLEANUP_INTERVAL: Duration = Duration::from_secs(60);
@@ -94,6 +100,7 @@ struct DnsHandler {
     upstream_direct: SocketAddr,
     upstream_proxy: SocketAddr,
     rules: AutoRules,
+    hosts: Hosts,
     direct_socket: UdpSocket,
     socks5_socket: Socks5Socket,
     in_flight_requests: HashMap<UpstreamId, InFlight>,
@@ -119,6 +126,7 @@ impl DnsHandler {
         upstream_proxy: &str,
         socks5: &str,
         rules: &AutoRules,
+        hosts: &Hosts,
     ) -> anyhow::Result<Self> {
         let socket = UdpSocket::bind(listen).await?;
         let upstream_direct = if upstream_direct == "system" {
@@ -136,6 +144,7 @@ impl DnsHandler {
             upstream_direct,
             upstream_proxy,
             rules: rules.clone(),
+            hosts: hosts.clone(),
             direct_socket,
             socks5_socket: Socks5Socket::new(socks5.to_string()),
             in_flight_requests: HashMap::new(),
@@ -200,6 +209,34 @@ impl DnsHandler {
         let mut domain = question.name().to_string();
         if domain.ends_with(".") {
             domain.pop();
+        }
+
+        match question.query_type() {
+            RecordType::A => {
+                if let Some(ip) = self.hosts.lookup_ipv4(&domain) {
+                    info!("hosts dns A {} -> {}", domain, ip);
+                    return self
+                        .reply_static_ip(&message, question, IpAddr::V4(ip), src)
+                        .await;
+                }
+                if self.hosts.has_domain(&domain) {
+                    info!("hosts dns A {} -> empty", domain);
+                    return self.reply_empty(&message, src).await;
+                }
+            }
+            RecordType::AAAA => {
+                if let Some(ip) = self.hosts.lookup_ipv6(&domain) {
+                    info!("hosts dns AAAA {} -> {}", domain, ip);
+                    return self
+                        .reply_static_ip(&message, question, IpAddr::V6(ip), src)
+                        .await;
+                }
+                if self.hosts.has_domain(&domain) {
+                    info!("hosts dns AAAA {} -> empty", domain);
+                    return self.reply_empty(&message, src).await;
+                }
+            }
+            _ => {}
         }
 
         let rule_result = self.rules.apply_proxy_rules(&domain);
@@ -282,6 +319,49 @@ impl DnsHandler {
 
         Ok(())
     }
+
+    async fn reply_static_ip(
+        &self,
+        request: &Message,
+        question: &Query,
+        ip: IpAddr,
+        src: SocketAddr,
+    ) -> anyhow::Result<()> {
+        let mut response = self.build_response(request, question);
+        let record = match ip {
+            IpAddr::V4(ip) => Record::from_rdata(question.name().clone(), 60, RData::A(ip.into())),
+            IpAddr::V6(ip) => {
+                Record::from_rdata(question.name().clone(), 60, RData::AAAA(ip.into()))
+            }
+        };
+        response.add_answer(record);
+
+        let data = response.to_vec().map_err(|e| anyhow!(e))?;
+        self.socket.send_to(&data, src).await?;
+        Ok(())
+    }
+
+    async fn reply_empty(&self, request: &Message, src: SocketAddr) -> anyhow::Result<()> {
+        let question = request
+            .queries()
+            .first()
+            .ok_or_else(|| anyhow!("No questions"))?;
+        let response = self.build_response(request, question);
+        let data = response.to_vec().map_err(|e| anyhow!(e))?;
+        self.socket.send_to(&data, src).await?;
+        Ok(())
+    }
+
+    fn build_response(&self, request: &Message, question: &Query) -> Message {
+        let mut response = Message::new();
+        response
+            .set_id(request.id())
+            .set_message_type(MessageType::Response)
+            .set_op_code(request.op_code())
+            .set_response_code(ResponseCode::NoError)
+            .add_query(question.clone());
+        response
+    }
 }
 
 pub async fn run_dns_server(
@@ -290,8 +370,17 @@ pub async fn run_dns_server(
     upstream_proxy: &str,
     socks5: &str,
     rules: &AutoRules,
+    hosts: &Hosts,
 ) -> anyhow::Result<()> {
-    let handler = DnsHandler::new(listen, upstream_direct, upstream_proxy, socks5, rules).await?;
+    let handler = DnsHandler::new(
+        listen,
+        upstream_direct,
+        upstream_proxy,
+        socks5,
+        rules,
+        hosts,
+    )
+    .await?;
     info!("DNS server listening on {}", listen);
     handler.run().await
 }

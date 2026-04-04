@@ -1,6 +1,7 @@
 use std::{env, fs};
 
 use autoproxy::dns::run_dns_server;
+use autoproxy::hosts::Hosts;
 use autoproxy::proxy::{run_http_proxy, run_socks5_proxy};
 use autoproxy::rule::{RulesConfig, load_rules};
 use futures::TryFutureExt;
@@ -37,6 +38,8 @@ struct Config {
     listen: Listen,
     proxy: Proxy,
     dns: DnsConfig,
+    hosts_ipv4: Option<String>,
+    hosts_ipv6: Option<String>,
 
     #[serde(flatten)]
     rules: RulesConfig,
@@ -77,18 +80,30 @@ async fn main() {
     let config: Config = toml::from_str(&content).unwrap();
 
     init_log(&config);
+    let hosts = Hosts::load(config.hosts_ipv4.as_deref(), config.hosts_ipv6.as_deref()).unwrap();
     let (rules, async_rules) = load_rules(config.rules).unwrap();
 
-    let h = run_http_proxy(&config.listen.http, &config.proxy.http, &async_rules)
-        .map_err(anyhow::Error::from);
-    let s = run_socks5_proxy(&config.listen.socks5, &config.proxy.socks5, &async_rules)
-        .map_err(anyhow::Error::from);
+    let h = run_http_proxy(
+        &config.listen.http,
+        &config.proxy.http,
+        &async_rules,
+        &hosts,
+    )
+    .map_err(anyhow::Error::from);
+    let s = run_socks5_proxy(
+        &config.listen.socks5,
+        &config.proxy.socks5,
+        &async_rules,
+        &hosts,
+    )
+    .map_err(anyhow::Error::from);
     let d = run_dns_server(
         &config.dns.listen,
         &config.dns.upstream_direct,
         &config.dns.upstream_proxy,
         &config.proxy.socks5,
         &rules,
+        &hosts,
     );
     futures::try_join!(h, s, d).unwrap();
 }

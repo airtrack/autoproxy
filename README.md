@@ -6,6 +6,7 @@ Auto choose proxy or not by rules.
 * TCP connections are automatically proxied or directly connected according to the rules.
 * UDP packets are sent directly to the destination address or via a proxy, based on matching rules for the destination address.
 * DNS server, according to the rules, directly resolves to the upstream DNS or goes through a proxy to resolve to the upstream DNS.
+* Optional hosts files can override DNS answers and force TCP domain connections to use a fixed IP directly.
 
 Usage
 -----
@@ -13,6 +14,28 @@ Usage
 ```
 ./autoproxy autoproxy.toml
 ```
+
+Hosts override
+--------------
+
+You can configure optional hosts files in `autoproxy.toml`:
+
+```toml
+hosts_ipv4 = "config/hosts4.txt"
+hosts_ipv6 = "config/hosts6.txt"
+```
+
+The format is the same as `/etc/hosts`, one IP and one domain per line:
+
+```txt
+1.2.3.4 example.com
+2408::1 example.com
+```
+
+When a domain matches a hosts entry:
+
+* DNS `A`/`AAAA` queries return the configured address directly.
+* TCP proxy connections use the configured IP directly and keep the original port.
 
 You can get `Country.mmdb` from [here](https://github.com/P3TERX/GeoLite.mmdb).
 
