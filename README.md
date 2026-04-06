@@ -37,6 +37,26 @@ When a domain matches a hosts entry:
 * DNS `A`/`AAAA` queries return the configured address directly.
 * TCP proxy connections use the configured IP directly and keep the original port.
 
+Domain rule files
+-----------------
+
+`DomainSuffixSet` uses a plain text file with one suffix per line. Empty lines are ignored, and lines starting with `#` are comments.
+
+```txt
+cn
+example.com
+# internal domains
+corp.local
+```
+
+Some well-known domains list:
+
+* Anti-AD domains: [anti-ad-domains.txt](https://github.com/privacy-protection-tools/anti-AD/blob/master/anti-ad-domains.txt)
+* CN domains: [cn-domains.txt](https://gist.github.com/aofei/aa9880b4fb6100448ee9576e3f215054)
+
+GeoIP2 MMDB
+-----------
+
 You can get `Country.mmdb` from [here](https://github.com/P3TERX/GeoLite.mmdb).
 
 Work with stunnel and gatewaysocks
