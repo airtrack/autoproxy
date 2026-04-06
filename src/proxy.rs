@@ -1,6 +1,6 @@
 use std::{
     io::{Error, ErrorKind, Result},
-    net::SocketAddr,
+    net::{IpAddr, SocketAddr},
 };
 
 use log::{info, trace};
@@ -11,6 +11,7 @@ use tokio::{
 };
 
 use crate::{
+    dns_path_cache::DnsPathCache,
     hosts::Hosts,
     rule::{AsyncAutoRules, RuleResult},
 };
@@ -20,6 +21,7 @@ pub async fn run_http_proxy(
     proxy: &str,
     rules: &AsyncAutoRules,
     hosts: &Hosts,
+    dns_path_cache: &DnsPathCache,
 ) -> Result<()> {
     let listener = TcpListener::bind(listen).await?;
 
@@ -28,8 +30,11 @@ pub async fn run_http_proxy(
         let proxy = proxy.to_owned();
         let rules = rules.clone();
         let hosts = hosts.clone();
+        let dns_path_cache = dns_path_cache.clone();
 
-        tokio::spawn(async move { run_http_proxy_connection(stream, rules, hosts, &proxy).await });
+        tokio::spawn(async move {
+            run_http_proxy_connection(stream, rules, hosts, dns_path_cache, &proxy).await
+        });
     }
 }
 
@@ -38,6 +43,7 @@ pub async fn run_socks5_proxy(
     proxy: &str,
     rules: &AsyncAutoRules,
     hosts: &Hosts,
+    dns_path_cache: &DnsPathCache,
 ) -> Result<()> {
     let listener = TcpListener::bind(listen).await?;
 
@@ -46,28 +52,30 @@ pub async fn run_socks5_proxy(
         let proxy = proxy.to_owned();
         let rules = rules.clone();
         let hosts = hosts.clone();
+        let dns_path_cache = dns_path_cache.clone();
 
-        tokio::spawn(
-            async move { run_socks5_proxy_connection(stream, rules, hosts, &proxy).await },
-        );
+        tokio::spawn(async move {
+            run_socks5_proxy_connection(stream, rules, hosts, dns_path_cache, &proxy).await
+        });
     }
 }
 
 enum ConnectTarget {
     Proxy,
-    DirectHost(String),
-    DirectIp(SocketAddr),
+    Direct,
+    DirectAddr(SocketAddr),
     Block,
 }
 
 enum TargetHost {
     Domain(String),
-    Ip,
+    Ip(IpAddr),
 }
 
 async fn connect<F>(
     rules: &AsyncAutoRules,
     hosts: &Hosts,
+    dns_path_cache: &DnsPathCache,
     proxy: &str,
     target: &str,
     f: F,
@@ -75,16 +83,16 @@ async fn connect<F>(
 where
     F: AsyncFnOnce(&str, &str) -> Result<TcpStream>,
 {
-    match resolve_connect_target(rules, hosts, target).await? {
+    match resolve_connect_target(rules, hosts, dns_path_cache, target).await? {
         ConnectTarget::Proxy => {
             info!("proxy connect tcp {}", target);
             f(proxy, target).await
         }
-        ConnectTarget::DirectHost(target) => {
+        ConnectTarget::Direct => {
             info!("direct connect tcp {}", target);
             TcpStream::connect(target).await
         }
-        ConnectTarget::DirectIp(addr) => {
+        ConnectTarget::DirectAddr(addr) => {
             info!("hosts connect tcp {} -> {}", target, addr);
             TcpStream::connect(addr).await
         }
@@ -98,27 +106,38 @@ where
 async fn resolve_connect_target(
     rules: &AsyncAutoRules,
     hosts: &Hosts,
+    dns_path_cache: &DnsPathCache,
     target: &str,
 ) -> Result<ConnectTarget> {
     let (host, port) = parse_target(target)?;
 
-    if let TargetHost::Domain(domain) = host {
-        if let Some(ip) = hosts.lookup_preferred_ip(&domain) {
-            return Ok(ConnectTarget::DirectIp(SocketAddr::new(ip, port)));
+    match host {
+        TargetHost::Domain(domain) => {
+            if let Some(ip) = hosts.lookup_preferred_ip(&domain) {
+                return Ok(ConnectTarget::DirectAddr(SocketAddr::new(ip, port)));
+            }
+        }
+        TargetHost::Ip(ip) => {
+            if let Some(path) = dns_path_cache.get(ip) {
+                return match path {
+                    RuleResult::Proxy => Ok(ConnectTarget::Proxy),
+                    RuleResult::Direct => Ok(ConnectTarget::Direct),
+                    _ => Ok(ConnectTarget::Block),
+                };
+            }
         }
     }
 
     match rules.apply_proxy_rules(target).await {
         RuleResult::Proxy => Ok(ConnectTarget::Proxy),
-        RuleResult::Direct => Ok(ConnectTarget::DirectHost(target.to_string())),
+        RuleResult::Direct => Ok(ConnectTarget::Direct),
         _ => Ok(ConnectTarget::Block),
     }
 }
 
 fn parse_target(target: &str) -> Result<(TargetHost, u16)> {
     if let Ok(addr) = target.parse::<SocketAddr>() {
-        let _ = addr.ip();
-        return Ok((TargetHost::Ip, addr.port()));
+        return Ok((TargetHost::Ip(addr.ip()), addr.port()));
     }
 
     let (host, port) = target
@@ -135,12 +154,14 @@ async fn run_http_proxy_connection(
     stream: TcpStream,
     rules: AsyncAutoRules,
     hosts: Hosts,
+    dns_path_cache: DnsPathCache,
     proxy: &str,
 ) -> Result<()> {
     let inbound = httpproxy::accept(stream).await?;
     let mut outbound = connect(
         &rules,
         &hosts,
+        &dns_path_cache,
         proxy,
         inbound.host(),
         async |proxy, host| httpproxy::connect(proxy, host).await,
@@ -161,11 +182,12 @@ async fn run_socks5_proxy_connection(
     stream: TcpStream,
     rules: AsyncAutoRules,
     hosts: Hosts,
+    dns_path_cache: DnsPathCache,
     proxy: &str,
 ) -> Result<()> {
     match socks5::accept(stream).await? {
         socks5::AcceptResult::Connect(incoming) => {
-            run_socks5_tcp_proxy(incoming, rules, hosts, proxy).await
+            run_socks5_tcp_proxy(incoming, rules, hosts, dns_path_cache, proxy).await
         }
         socks5::AcceptResult::UdpAssociate(incoming) => {
             run_socks5_udp_proxy(incoming, rules, proxy).await
@@ -177,6 +199,7 @@ async fn run_socks5_tcp_proxy(
     incoming: TcpIncoming,
     rules: AsyncAutoRules,
     hosts: Hosts,
+    dns_path_cache: DnsPathCache,
     proxy: &str,
 ) -> Result<()> {
     let host = match incoming.destination() {
@@ -185,9 +208,14 @@ async fn run_socks5_tcp_proxy(
     };
     let destination = incoming.destination().clone();
 
-    let mut outbound = connect(&rules, &hosts, proxy, &host, async |proxy, _| {
-        socks5::connect(proxy, destination).await
-    })
+    let mut outbound = connect(
+        &rules,
+        &hosts,
+        &dns_path_cache,
+        proxy,
+        &host,
+        async |proxy, _| socks5::connect(proxy, destination).await,
+    )
     .await?;
 
     let mut inbound = incoming.reply_ok(outbound.local_addr()?).await?;

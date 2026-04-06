@@ -1,6 +1,7 @@
 use std::{env, fs};
 
 use autoproxy::dns::run_dns_server;
+use autoproxy::dns_path_cache::DnsPathCache;
 use autoproxy::hosts::Hosts;
 use autoproxy::proxy::{run_http_proxy, run_socks5_proxy};
 use autoproxy::rule::{RulesConfig, load_rules};
@@ -81,6 +82,7 @@ async fn main() {
 
     init_log(&config);
     let hosts = Hosts::load(config.hosts_ipv4.as_deref(), config.hosts_ipv6.as_deref()).unwrap();
+    let dns_path_cache = DnsPathCache::new();
     let (rules, async_rules) = load_rules(config.rules).unwrap();
 
     let h = run_http_proxy(
@@ -88,6 +90,7 @@ async fn main() {
         &config.proxy.http,
         &async_rules,
         &hosts,
+        &dns_path_cache,
     )
     .map_err(anyhow::Error::from);
     let s = run_socks5_proxy(
@@ -95,6 +98,7 @@ async fn main() {
         &config.proxy.socks5,
         &async_rules,
         &hosts,
+        &dns_path_cache,
     )
     .map_err(anyhow::Error::from);
     let d = run_dns_server(
@@ -104,6 +108,7 @@ async fn main() {
         &config.proxy.socks5,
         &rules,
         &hosts,
+        &dns_path_cache,
     );
     futures::try_join!(h, s, d).unwrap();
 }

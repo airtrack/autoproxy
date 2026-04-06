@@ -85,6 +85,7 @@ dependencies = [
  "aho-corasick",
  "anyhow",
  "async-trait",
+ "dashmap",
  "env_logger",
  "futures",
  "hickory-proto",

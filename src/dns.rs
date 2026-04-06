@@ -11,6 +11,7 @@ use log::{error, info};
 use tokio::net::UdpSocket;
 
 use crate::{
+    dns_path_cache::DnsPathCache,
     hosts::Hosts,
     rule::{AutoRules, RuleResult},
 };
@@ -27,6 +28,7 @@ struct UpstreamId(u16);
 struct InFlight {
     client_id: u16,
     client_addr: SocketAddr,
+    path: RuleResult,
     created_at: Instant,
 }
 
@@ -101,6 +103,7 @@ struct DnsHandler {
     upstream_proxy: SocketAddr,
     rules: AutoRules,
     hosts: Hosts,
+    dns_path_cache: DnsPathCache,
     direct_socket: UdpSocket,
     socks5_socket: Socks5Socket,
     in_flight_requests: HashMap<UpstreamId, InFlight>,
@@ -127,6 +130,7 @@ impl DnsHandler {
         socks5: &str,
         rules: &AutoRules,
         hosts: &Hosts,
+        dns_path_cache: &DnsPathCache,
     ) -> anyhow::Result<Self> {
         let socket = UdpSocket::bind(listen).await?;
         let upstream_direct = if upstream_direct == "system" {
@@ -145,6 +149,7 @@ impl DnsHandler {
             upstream_proxy,
             rules: rules.clone(),
             hosts: hosts.clone(),
+            dns_path_cache: dns_path_cache.clone(),
             direct_socket,
             socks5_socket: Socks5Socket::new(socks5.to_string()),
             in_flight_requests: HashMap::new(),
@@ -184,6 +189,7 @@ impl DnsHandler {
                     self.in_flight_requests.retain(|_, in_flight| {
                         now.duration_since(in_flight.created_at) < DNS_REQUEST_TIMEOUT
                     });
+                    self.dns_path_cache.cleanup_expired();
                 }
             }
         }
@@ -268,6 +274,7 @@ impl DnsHandler {
             InFlight {
                 client_addr: src,
                 client_id: message.id(),
+                path: rule_result,
                 created_at: Instant::now(),
             },
         );
@@ -306,6 +313,7 @@ impl DnsHandler {
         let message = Message::from_vec(data)?;
 
         if let Some(in_flight) = self.in_flight_requests.remove(&UpstreamId(message.id())) {
+            self.cache_response_ips(&message, in_flight.path);
             let mut response = message;
             let response_data = response
                 .set_id(in_flight.client_id)
@@ -318,6 +326,22 @@ impl DnsHandler {
         }
 
         Ok(())
+    }
+
+    fn cache_response_ips(&self, message: &Message, path: RuleResult) {
+        for answer in message.answers() {
+            match answer.data() {
+                Some(RData::A(ip)) => {
+                    self.dns_path_cache
+                        .insert(IpAddr::V4((*ip).into()), path, answer.ttl())
+                }
+                Some(RData::AAAA(ip)) => {
+                    self.dns_path_cache
+                        .insert(IpAddr::V6((*ip).into()), path, answer.ttl())
+                }
+                _ => {}
+            }
+        }
     }
 
     async fn reply_static_ip(
@@ -371,6 +395,7 @@ pub async fn run_dns_server(
     socks5: &str,
     rules: &AutoRules,
     hosts: &Hosts,
+    dns_path_cache: &DnsPathCache,
 ) -> anyhow::Result<()> {
     let handler = DnsHandler::new(
         listen,
@@ -379,6 +404,7 @@ pub async fn run_dns_server(
         socks5,
         rules,
         hosts,
+        dns_path_cache,
     )
     .await?;
     info!("DNS server listening on {}", listen);
