@@ -53,6 +53,7 @@ Some well-known domains list:
 
 * Anti-AD domains: [anti-ad-domains.txt](https://github.com/privacy-protection-tools/anti-AD/blob/master/anti-ad-domains.txt)
 * CN domains: [cn-domains.txt](https://gist.github.com/aofei/aa9880b4fb6100448ee9576e3f215054)
+* Other domains(apple/google): get from [here](https://github.com/felixonmars/dnsmasq-china-list), some conversions are required
 
 GeoIP2 MMDB
 -----------
