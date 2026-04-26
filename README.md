@@ -12,7 +12,7 @@ Usage
 -----
 
 ```
-./autoproxy autoproxy.toml
+./autoproxy --config autoproxy.toml
 ```
 
 Hosts override

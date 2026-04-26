@@ -1,8 +1,9 @@
 [package]
 name = "autoproxy"
-version = "0.2.1"
+version = "0.2.2"
 authors = ["airtrack <airtrack.sk@gmail.com>"]
 edition = "2024"
+build = "build.rs"
 
 [dependencies]
 socks5 = { git = "https://github.com/airtrack/sproxy.git", tag = "0.1.1" }
@@ -23,6 +24,11 @@ hickory-proto = "0.24"
 hickory-resolver = "0.24"
 anyhow = "1.0"
 dashmap = "5.5"
+clap = { version = "4.5.60", features = ["derive"] }
+shadow-rs = { version = "2.0.0", default-features = false }
+
+[build-dependencies]
+shadow-rs = "2.0.0"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 oslog = "*"

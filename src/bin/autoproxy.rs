@@ -1,12 +1,29 @@
-use std::{env, fs};
+use std::{fs, path::PathBuf};
 
 use autoproxy::dns::run_dns_server;
 use autoproxy::dns_path_cache::DnsPathCache;
 use autoproxy::hosts::Hosts;
 use autoproxy::proxy::{run_http_proxy, run_socks5_proxy};
 use autoproxy::rule::{RulesConfig, load_rules};
+use clap::Parser;
 use futures::TryFutureExt;
 use serde::Deserialize;
+use shadow_rs::shadow;
+
+shadow!(build);
+
+#[derive(Parser)]
+struct Args {
+    #[arg(long, action = clap::ArgAction::SetTrue, help = "Print version information")]
+    version: bool,
+    #[arg(
+        long,
+        value_name = "FILE",
+        required_unless_present = "version",
+        help = "Path to the TOML config file"
+    )]
+    config: Option<PathBuf>,
+}
 
 #[derive(Deserialize)]
 struct Listen {
@@ -69,15 +86,28 @@ fn init_log(_config: &Config) {
         .init();
 }
 
+fn version() -> String {
+    let dirty = if build::GIT_CLEAN { "" } else { "*" };
+    let build_time = build::BUILD_TIME.get(..19).unwrap_or(build::BUILD_TIME);
+    format!(
+        "{} {} ({}{} {})",
+        build::PROJECT_NAME,
+        build::PKG_VERSION,
+        build::SHORT_COMMIT,
+        dirty,
+        build_time
+    )
+}
+
 #[tokio::main]
 async fn main() {
-    let mut args = env::args();
-    if args.len() != 2 {
-        println!("Usage: {} config.toml", args.nth(0).unwrap());
+    let args = Args::parse();
+    if args.version {
+        println!("{}", version());
         return;
     }
 
-    let content = String::from_utf8(fs::read(&args.nth(1).unwrap()).unwrap()).unwrap();
+    let content = String::from_utf8(fs::read(args.config.unwrap()).unwrap()).unwrap();
     let config: Config = toml::from_str(&content).unwrap();
 
     init_log(&config);
