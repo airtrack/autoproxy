@@ -1,6 +1,8 @@
 use std::{
+    future::Future,
     io::{Error, ErrorKind, Result},
     net::{IpAddr, SocketAddr},
+    time::Instant,
 };
 
 use log::{info, trace};
@@ -13,6 +15,7 @@ use tokio::{
 use crate::{
     dns_path_cache::DnsPathCache,
     hosts::Hosts,
+    metrics::{self, CacheLookup, Direction, Outcome, Path, Protocol},
     rule::{AsyncAutoRules, RuleResult},
 };
 
@@ -33,7 +36,12 @@ pub async fn run_http_proxy(
         let dns_path_cache = dns_path_cache.clone();
 
         tokio::spawn(async move {
-            run_http_proxy_connection(stream, rules, hosts, dns_path_cache, &proxy).await
+            track_connection(
+                Protocol::Http,
+                run_http_proxy_connection(stream, rules, hosts, dns_path_cache, &proxy),
+            )
+            .await
+            .ok();
         });
     }
 }
@@ -55,9 +63,32 @@ pub async fn run_socks5_proxy(
         let dns_path_cache = dns_path_cache.clone();
 
         tokio::spawn(async move {
-            run_socks5_proxy_connection(stream, rules, hosts, dns_path_cache, &proxy).await
+            track_connection(
+                Protocol::Socks5,
+                run_socks5_proxy_connection(stream, rules, hosts, dns_path_cache, &proxy),
+            )
+            .await
+            .ok();
         });
     }
+}
+
+/// One accepted client connection, from accept to close: the active gauge, the
+/// count, and the duration. Every other metric is recorded inside the
+/// connection, where the path a target took is known.
+async fn track_connection<F>(protocol: Protocol, connection: F) -> Result<()>
+where
+    F: Future<Output = Result<()>>,
+{
+    metrics::connection_started(protocol);
+    let started = Instant::now();
+    let result = connection.await;
+    metrics::connection_finished(
+        protocol,
+        Outcome::of(result.is_ok()),
+        started.elapsed().as_secs_f64(),
+    );
+    result
 }
 
 enum ConnectTarget {
@@ -67,12 +98,26 @@ enum ConnectTarget {
     Block,
 }
 
+impl ConnectTarget {
+    /// The path this target took, for the decision counter. A hosts override
+    /// is its own path: the rules were never asked.
+    fn path(&self) -> Path {
+        match self {
+            Self::Proxy => Path::Proxy,
+            Self::Direct => Path::Direct,
+            Self::DirectAddr(_) => Path::Hosts,
+            Self::Block => Path::Block,
+        }
+    }
+}
+
 enum TargetHost {
     Domain(String),
     Ip(IpAddr),
 }
 
 async fn connect<F>(
+    protocol: Protocol,
     rules: &AsyncAutoRules,
     hosts: &Hosts,
     dns_path_cache: &DnsPathCache,
@@ -83,7 +128,10 @@ async fn connect<F>(
 where
     F: AsyncFnOnce(&str, &str) -> Result<TcpStream>,
 {
-    match resolve_connect_target(rules, hosts, dns_path_cache, target).await? {
+    let connect_target = resolve_connect_target(rules, hosts, dns_path_cache, target).await?;
+    metrics::connect_decision(protocol, connect_target.path());
+
+    match connect_target {
         ConnectTarget::Proxy => {
             info!("proxy connect tcp {}", target);
             f(proxy, target).await
@@ -118,7 +166,9 @@ async fn resolve_connect_target(
             }
         }
         TargetHost::Ip(ip) => {
-            if let Some(path) = dns_path_cache.get(ip) {
+            let cached = dns_path_cache.get(ip);
+            metrics::dns_cache_lookup(CacheLookup::of(cached.is_some()));
+            if let Some(path) = cached {
                 return match path {
                     RuleResult::Proxy => Ok(ConnectTarget::Proxy),
                     RuleResult::Direct => Ok(ConnectTarget::Direct),
@@ -159,6 +209,7 @@ async fn run_http_proxy_connection(
 ) -> Result<()> {
     let inbound = httpproxy::accept(stream).await?;
     let mut outbound = connect(
+        Protocol::Http,
         &rules,
         &hosts,
         &dns_path_cache,
@@ -209,6 +260,7 @@ async fn run_socks5_tcp_proxy(
     let destination = incoming.destination().clone();
 
     let mut outbound = connect(
+        Protocol::Socks5,
         &rules,
         &hosts,
         &dns_path_cache,
@@ -241,6 +293,7 @@ async fn run_socks5_udp_proxy(
         mut addr: SocketAddr,
     ) -> Result<()> {
         outbound.send(&mut buf, addr).await?;
+        metrics::udp_packet(Direction::Up, buf.as_ref().len() as u64);
 
         let mut buf1 = socks5::UdpSocketBuf::new();
         let mut buf2 = socks5::UdpSocketBuf::new();
@@ -250,9 +303,11 @@ async fn run_socks5_udp_proxy(
                 r = inbound.recv(&mut buf) => {
                     addr = r?;
                     outbound.send(&mut buf, addr).await?;
+                    metrics::udp_packet(Direction::Up, buf.as_ref().len() as u64);
                 }
                 r = outbound.recv(&mut buf1, &mut buf2) => {
                     let (buf, addr) = r?;
+                    metrics::udp_packet(Direction::Down, buf.as_ref().len() as u64);
                     inbound.send(buf, addr).await?;
                 }
             }
@@ -332,6 +387,7 @@ impl UdpOutboundSocket {
             }
             _ => {
                 info!("block udp packet {} to {}", self.from, addr);
+                metrics::udp_blocked();
             }
         }
 

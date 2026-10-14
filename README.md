@@ -60,6 +60,17 @@ GeoIP2 MMDB
 
 You can get `Country.mmdb` from [here](https://github.com/P3TERX/GeoLite.mmdb).
 
+Metrics
+-------
+
+`docs/grafana-metrics-dashboard.json` is a Grafana dashboard over the OTel
+collector's ClickHouse tables. It is generated from the panel-per-statement SQL
+in `docs/grafana-metrics.sql`, which is the file to edit:
+
+```
+python3 tools/make_grafana_dashboard.py
+```
+
 Work with stunnel and gatewaysocks
 ----------------------------------
 

@@ -6,7 +6,7 @@ use std::{
 
 use dashmap::DashMap;
 
-use crate::rule::RuleResult;
+use crate::{metrics, rule::RuleResult};
 
 const MIN_TTL: Duration = Duration::from_secs(60);
 const MAX_TTL: Duration = Duration::from_secs(3600);
@@ -41,6 +41,7 @@ impl DnsPathCache {
                 expires_at: Instant::now() + clamp_ttl(ttl),
             },
         );
+        metrics::dns_cache_entries(self.entries.len());
     }
 
     pub fn get(&self, ip: IpAddr) -> Option<RuleResult> {
@@ -51,12 +52,14 @@ impl DnsPathCache {
 
         drop(entry);
         self.entries.remove(&ip);
+        metrics::dns_cache_entries(self.entries.len());
         None
     }
 
     pub fn cleanup_expired(&self) {
         let now = Instant::now();
         self.entries.retain(|_, entry| now < entry.expires_at);
+        metrics::dns_cache_entries(self.entries.len());
     }
 }
 

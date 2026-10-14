@@ -6,6 +6,13 @@ dns = { listen = "127.0.0.1:55353", upstream_direct = "system", upstream_proxy =
 # hosts_ipv4 = "config/hosts4.txt"
 # hosts_ipv6 = "config/hosts6.txt"
 
+# optional: OTLP/HTTP metrics. Without an endpoint (or with endpoint = "") the
+# proxy runs on the no-op recorder and starts no exporter thread.
+otel = { endpoint = "http://10.0.0.36:4318", service_name = "autoproxy", export_interval_secs = 15 }
+# otel = { endpoint = "http://127.0.0.1:4318", protocol = "http-json",
+#          service_name = "autoproxy", export_interval_secs = 15,
+#          headers = { authorization = "Bearer ..." } }
+
 # suffix_domains.txt:
 # ```
 # cn

@@ -13,6 +13,7 @@ use tokio::net::UdpSocket;
 use crate::{
     dns_path_cache::DnsPathCache,
     hosts::Hosts,
+    metrics::{self, Path, QueryType},
     rule::{AutoRules, RuleResult},
 };
 
@@ -189,6 +190,7 @@ impl DnsHandler {
                     self.in_flight_requests.retain(|_, in_flight| {
                         now.duration_since(in_flight.created_at) < DNS_REQUEST_TIMEOUT
                     });
+                    metrics::dns_in_flight(self.in_flight_requests.len());
                     self.dns_path_cache.cleanup_expired();
                 }
             }
@@ -217,28 +219,34 @@ impl DnsHandler {
             domain.pop();
         }
 
+        let query_type = QueryType::of(question.query_type());
+
         match question.query_type() {
             RecordType::A => {
                 if let Some(ip) = self.hosts.lookup_ipv4(&domain) {
                     info!("hosts dns A {} -> {}", domain, ip);
+                    metrics::dns_query(query_type, Path::Hosts);
                     return self
                         .reply_static_ip(&message, question, IpAddr::V4(ip), src)
                         .await;
                 }
                 if self.hosts.has_domain(&domain) {
                     info!("hosts dns A {} -> empty", domain);
+                    metrics::dns_query(query_type, Path::Hosts);
                     return self.reply_empty(&message, src).await;
                 }
             }
             RecordType::AAAA => {
                 if let Some(ip) = self.hosts.lookup_ipv6(&domain) {
                     info!("hosts dns AAAA {} -> {}", domain, ip);
+                    metrics::dns_query(query_type, Path::Hosts);
                     return self
                         .reply_static_ip(&message, question, IpAddr::V6(ip), src)
                         .await;
                 }
                 if self.hosts.has_domain(&domain) {
                     info!("hosts dns AAAA {} -> empty", domain);
+                    metrics::dns_query(query_type, Path::Hosts);
                     return self.reply_empty(&message, src).await;
                 }
             }
@@ -250,6 +258,7 @@ impl DnsHandler {
         match rule_result {
             RuleResult::Block => {
                 info!("{domain} blocked");
+                metrics::dns_query(query_type, Path::Block);
                 return Ok(());
             }
             RuleResult::Proxy => {
@@ -278,6 +287,8 @@ impl DnsHandler {
                 created_at: Instant::now(),
             },
         );
+        metrics::dns_in_flight(self.in_flight_requests.len());
+        metrics::dns_query(query_type, Path::of(rule_result));
 
         let mut upstream_message = message;
         let upstream_data = upstream_message
@@ -292,6 +303,8 @@ impl DnsHandler {
                     .await
                     .map_err(|error| {
                         self.in_flight_requests.remove(&upstream_id);
+                        metrics::dns_in_flight(self.in_flight_requests.len());
+                        metrics::dns_upstream_error(Path::Proxy);
                         error
                     })?;
             }
@@ -301,6 +314,8 @@ impl DnsHandler {
                     .await
                     .map_err(|error| {
                         self.in_flight_requests.remove(&upstream_id);
+                        metrics::dns_in_flight(self.in_flight_requests.len());
+                        metrics::dns_upstream_error(Path::Direct);
                         anyhow!(error)
                     })?;
             }
@@ -313,6 +328,11 @@ impl DnsHandler {
         let message = Message::from_vec(data)?;
 
         if let Some(in_flight) = self.in_flight_requests.remove(&UpstreamId(message.id())) {
+            metrics::dns_upstream_duration(
+                Path::of(in_flight.path),
+                in_flight.created_at.elapsed().as_secs_f64(),
+            );
+            metrics::dns_in_flight(self.in_flight_requests.len());
             self.cache_response_ips(&message, in_flight.path);
             let mut response = message;
             let response_data = response

@@ -5,6 +5,7 @@ use autoproxy::dns_path_cache::DnsPathCache;
 use autoproxy::hosts::Hosts;
 use autoproxy::proxy::{run_http_proxy, run_socks5_proxy};
 use autoproxy::rule::{RulesConfig, load_rules};
+use autoproxy::telemetry::{OtelConfig, Telemetry};
 use clap::Parser;
 use futures::TryFutureExt;
 use serde::Deserialize;
@@ -59,6 +60,9 @@ struct Config {
     hosts_ipv4: Option<String>,
     hosts_ipv6: Option<String>,
 
+    #[serde(default)]
+    otel: OtelConfig,
+
     #[serde(flatten)]
     rules: RulesConfig,
 
@@ -111,6 +115,7 @@ async fn main() {
     let config: Config = toml::from_str(&content).unwrap();
 
     init_log(&config);
+    let _telemetry = Telemetry::init(&config.otel, &version()).unwrap();
     let hosts = Hosts::load(config.hosts_ipv4.as_deref(), config.hosts_ipv6.as_deref()).unwrap();
     let dns_path_cache = DnsPathCache::new();
     let (rules, async_rules) = load_rules(config.rules).unwrap();

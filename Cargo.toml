@@ -25,6 +25,15 @@ hickory-resolver = "0.24"
 anyhow = "1.0"
 dashmap = "5.5"
 clap = { version = "4.5.60", features = ["derive"] }
+metrics = "0.24"
+metrics-exporter-otel = "0.3"
+opentelemetry = { version = "0.31", default-features = false, features = ["metrics"] }
+opentelemetry_sdk = { version = "0.31", default-features = false, features = ["metrics"] }
+opentelemetry-otlp = { version = "0.31", default-features = false, features = [
+    "http-proto",
+    "reqwest-blocking-client",
+    "metrics",
+] }
 shadow-rs = { version = "2.0.0", default-features = false }
 
 [build-dependencies]
