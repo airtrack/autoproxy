@@ -7,7 +7,11 @@
 //! at all: every `metrics` call in the crate then records into the facade's
 //! built-in no-op recorder and no exporter thread exists.
 
-use std::{collections::HashMap, time::Duration};
+use std::{
+    collections::HashMap,
+    net::{IpAddr, UdpSocket},
+    time::Duration,
+};
 
 use anyhow::{Context, Result, anyhow};
 use log::info;
@@ -53,6 +57,11 @@ pub struct OtelConfig {
     pub metrics_path: String,
     /// The `service.name` resource attribute every point carries.
     pub service_name: String,
+    /// The `service.instance.id` resource attribute. Unset means the device's
+    /// outbound IP, determined by a UDP route lookup to a public resolver.
+    /// Set it when that route does not identify the device (a tunnel or a
+    /// multi-homed host, for instance).
+    pub instance_id: Option<String>,
     /// How often the metric reader exports.
     pub export_interval_secs: u64,
     /// Extra OTLP request headers, for a collector that wants auth.
@@ -66,6 +75,7 @@ impl Default for OtelConfig {
             protocol: OtelProtocol::HttpProto,
             metrics_path: "/v1/metrics".into(),
             service_name: "autoproxy".into(),
+            instance_id: None,
             export_interval_secs: 15,
             headers: HashMap::new(),
         }
@@ -118,10 +128,20 @@ impl Telemetry {
         };
         let url = signal_url(&endpoint, &config.metrics_path);
         let interval = config.export_interval_secs.max(1);
+        let instance_id = configured_instance_id(config)
+            .or_else(|| detect_device_ip().map(|ip| ip.to_string()))
+            .unwrap_or_else(|| {
+                log::warn!(
+                    "OTel metrics: cannot determine the device IP, set otel.instance_id \
+                     so replicas on different devices do not share a series"
+                );
+                "unknown".to_string()
+            });
 
         let resource = Resource::builder()
             .with_service_name(config.service_name.clone())
             .with_attribute(KeyValue::new("service.version", version.to_string()))
+            .with_attribute(KeyValue::new("service.instance.id", instance_id.clone()))
             .build();
         let exporter = opentelemetry_otlp::MetricExporter::builder()
             .with_http()
@@ -155,11 +175,31 @@ impl Telemetry {
         describe_metrics();
 
         info!(
-            "OTel metrics: {} (service {}, every {}s)",
-            url, config.service_name, interval
+            "OTel metrics: {} (service {}, instance {}, every {}s)",
+            url, config.service_name, instance_id, interval
         );
         Ok(Some(Self { _meter: provider }))
     }
+}
+
+/// The configured instance id, trimmed, or `None` when it is unset or blank.
+fn configured_instance_id(config: &OtelConfig) -> Option<String> {
+    config
+        .instance_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+        .map(str::to_owned)
+}
+
+/// The device's outbound IP. A connected UDP socket sends no packet, it only
+/// asks the routing table which local address reaches a public resolver, so
+/// this does not depend on the collector URL or on DNS.
+fn detect_device_ip() -> Option<IpAddr> {
+    let socket = UdpSocket::bind("0.0.0.0:0").ok()?;
+    socket.connect("8.8.8.8:53").ok()?;
+    let ip = socket.local_addr().ok()?.ip();
+    (!ip.is_unspecified()).then_some(ip)
 }
 
 /// One signal's URL: the configured base plus its path, with a single slash
@@ -254,6 +294,18 @@ mod tests {
     }
 
     #[test]
+    fn an_empty_instance_id_falls_back_to_detection() {
+        let wrapper: Wrapper = toml::from_str("otel = { instance_id = \"   \" }").unwrap();
+        assert_eq!(configured_instance_id(&wrapper.otel), None);
+
+        let wrapper: Wrapper = toml::from_str("otel = { instance_id = \" 10.0.0.37 \" }").unwrap();
+        assert_eq!(
+            configured_instance_id(&wrapper.otel).as_deref(),
+            Some("10.0.0.37")
+        );
+    }
+
+    #[test]
     fn protocol_maps_to_the_otlp_protocol() {
         assert!(matches!(
             protocol(OtelProtocol::HttpJson),
@@ -272,6 +324,7 @@ mod tests {
         assert_eq!(wrapper.otel.protocol, OtelProtocol::HttpProto);
         assert_eq!(wrapper.otel.metrics_path, "/v1/metrics");
         assert_eq!(wrapper.otel.service_name, "autoproxy");
+        assert_eq!(wrapper.otel.instance_id, None);
         assert_eq!(wrapper.otel.export_interval_secs, 15);
     }
 
@@ -279,7 +332,8 @@ mod tests {
     fn the_otel_block_parses_and_its_typos_fail_fast() {
         let wrapper: Wrapper = toml::from_str(
             "otel = { endpoint = \"http://10.0.0.36:4318/\", protocol = \"http-json\", \
-             service_name = \"autoproxy-mock\", export_interval_secs = 5, \
+             service_name = \"autoproxy-mock\", instance_id = \"10.0.0.37\", \
+             export_interval_secs = 5, \
              headers = { authorization = \"Bearer x\" } }",
         )
         .unwrap();
@@ -289,6 +343,10 @@ mod tests {
         );
         assert!(matches!(wrapper.otel.protocol, OtelProtocol::HttpJson));
         assert_eq!(wrapper.otel.service_name, "autoproxy-mock");
+        assert_eq!(
+            configured_instance_id(&wrapper.otel).as_deref(),
+            Some("10.0.0.37")
+        );
         assert_eq!(wrapper.otel.export_interval_secs, 5);
         assert_eq!(
             wrapper

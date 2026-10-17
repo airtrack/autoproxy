@@ -8,10 +8,14 @@ dns = { listen = "127.0.0.1:55353", upstream_direct = "system", upstream_proxy =
 
 # optional: OTLP/HTTP metrics. Without an endpoint (or with endpoint = "") the
 # proxy runs on the no-op recorder and starts no exporter thread.
+#
+# Every point carries service.instance.id = the device's outbound IP, found
+# with a UDP route lookup to 8.8.8.8 (no packet is sent). Override it when that
+# route does not identify the device, for example behind a tunnel:
 otel = { endpoint = "http://10.0.0.36:4318", service_name = "autoproxy", export_interval_secs = 15 }
 # otel = { endpoint = "http://127.0.0.1:4318", protocol = "http-json",
 #          service_name = "autoproxy", export_interval_secs = 15,
-#          headers = { authorization = "Bearer ..." } }
+#          instance_id = "10.0.0.37", headers = { authorization = "Bearer ..." } }
 
 # suffix_domains.txt:
 # ```
