@@ -1,4 +1,5 @@
 listen = { http = "127.0.0.1:8080", socks5 = "127.0.0.1:1080" }
+# the default proxy group; rules without `group` use this one
 proxy = { http = "127.0.0.1:18080", socks5 = "127.0.0.1:11080" }
 dns = { listen = "127.0.0.1:55353", upstream_direct = "system", upstream_proxy = "8.8.8.8:53" }
 
@@ -45,6 +46,9 @@ rules = [
     # use the suffix_domains.txt file directly
     # { type = "DomainSuffixSet", file = "suffix_domains.txt", rule = "Proxy" },
 
+    # route matching domains through a named proxy group
+    # { type = "DomainKeyword", keyword = "google", rule = "Proxy", group = "us" },
+
     # use the global mmdb file
     # { type = "GeoIp", country = "CN", rule = "Direct" },
     # use the mmdb file associated with the name `default` in mmdb_sets
@@ -52,3 +56,14 @@ rules = [
 
     { type = "Direct", rule = "Proxy" }
 ]
+
+# Optional named proxy groups. `proxy` above is the default group; rules select
+# one of these with `group = "us"`. DNS and SOCKS5 UDP still use the default
+# group's socks5 address for now.
+#
+# Keep this table block after every top-level key: in TOML, keys following a
+# table header belong to that table.
+#
+# [proxy_groups.us]
+# http = "127.0.0.1:28080"
+# socks5 = "127.0.0.1:21080"

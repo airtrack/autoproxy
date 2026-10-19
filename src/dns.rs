@@ -261,7 +261,7 @@ impl DnsHandler {
                 metrics::dns_query(query_type, Path::Block);
                 return Ok(());
             }
-            RuleResult::Proxy => {
+            RuleResult::Proxy(_) => {
                 info!("{domain} --> {}", self.upstream_proxy);
             }
             _ => {
@@ -297,7 +297,10 @@ impl DnsHandler {
             .map_err(|e| anyhow!(e))?;
 
         match rule_result {
-            RuleResult::Proxy => {
+            // DNS transport still uses the default proxy group. The group in
+            // the rule result is kept as the cached path for later TCP
+            // connections to the resolved addresses.
+            RuleResult::Proxy(_) => {
                 self.socks5_socket
                     .send(&upstream_data, self.upstream_proxy)
                     .await

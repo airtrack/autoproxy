@@ -30,7 +30,7 @@ impl DnsPathCache {
     }
 
     pub fn insert(&self, ip: IpAddr, path: RuleResult, ttl: u32) {
-        if !matches!(path, RuleResult::Direct | RuleResult::Proxy) {
+        if !matches!(path, RuleResult::Direct | RuleResult::Proxy(_)) {
             return;
         }
 

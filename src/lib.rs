@@ -2,6 +2,8 @@ pub mod dns;
 pub mod dns_path_cache;
 pub mod hosts;
 pub mod metrics;
+pub mod protocol;
 pub mod proxy;
+pub mod proxy_group;
 pub mod rule;
 pub mod telemetry;

@@ -15,8 +15,20 @@ use maxminddb::{Reader, geoip2};
 use serde::Deserialize;
 use tokio::net;
 
-#[derive(Debug, Copy, Clone, Deserialize)]
+use crate::proxy_group::{ProxyGroupId, ProxyGroups};
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum RuleResult {
+    Proxy(ProxyGroupId),
+    Direct,
+    Block,
+    NotFound,
+}
+
+/// The action of a rule as written in the config. [`RuleResult`] is the same
+/// action with the proxy group name already resolved to a [`ProxyGroupId`].
+#[derive(Debug, Copy, Clone, Deserialize)]
+pub enum RuleAction {
     Proxy,
     Direct,
     Block,
@@ -268,25 +280,35 @@ impl AsyncAutoRules {
 #[serde(tag = "type")]
 pub enum RuleConfig {
     Direct {
-        rule: RuleResult,
+        rule: RuleAction,
+        #[serde(default)]
+        group: Option<String>,
     },
     IpNet {
         ipnet: String,
-        rule: RuleResult,
+        rule: RuleAction,
+        #[serde(default)]
+        group: Option<String>,
     },
     DomainKeyword {
         keyword: String,
-        rule: RuleResult,
+        rule: RuleAction,
+        #[serde(default)]
+        group: Option<String>,
     },
     DomainSuffixSet {
         name: Option<String>,
         file: Option<String>,
-        rule: RuleResult,
+        rule: RuleAction,
+        #[serde(default)]
+        group: Option<String>,
     },
     GeoIp {
         name: Option<String>,
         country: String,
-        rule: RuleResult,
+        rule: RuleAction,
+        #[serde(default)]
+        group: Option<String>,
     },
 }
 
@@ -312,7 +334,34 @@ pub struct RulesConfig {
     pub rules: Vec<RuleConfig>,
 }
 
-pub fn load_rules(config: RulesConfig) -> anyhow::Result<(AutoRules, AsyncAutoRules)> {
+fn resolve_rule(
+    action: RuleAction,
+    group: Option<&str>,
+    proxies: &ProxyGroups,
+) -> anyhow::Result<RuleResult> {
+    match action {
+        RuleAction::Proxy => Ok(RuleResult::Proxy(proxies.resolve(group)?)),
+        RuleAction::Direct | RuleAction::Block | RuleAction::NotFound => {
+            if let Some(group) = group {
+                return Err(anyhow!(
+                    "proxy group '{group}' is only valid with rule = \"Proxy\""
+                ));
+            }
+
+            Ok(match action {
+                RuleAction::Direct => RuleResult::Direct,
+                RuleAction::Block => RuleResult::Block,
+                RuleAction::NotFound => RuleResult::NotFound,
+                RuleAction::Proxy => unreachable!(),
+            })
+        }
+    }
+}
+
+pub fn load_rules(
+    config: RulesConfig,
+    proxies: &ProxyGroups,
+) -> anyhow::Result<(AutoRules, AsyncAutoRules)> {
     let mut rules = Vec::<Arc<dyn Rule>>::new();
     let mut async_rules = Vec::<Arc<dyn AsyncRule>>::new();
     let mut ac_cache = HashMap::<String, Arc<AhoCorasick>>::new();
@@ -339,33 +388,46 @@ pub fn load_rules(config: RulesConfig) -> anyhow::Result<(AutoRules, AsyncAutoRu
 
     for rule in config.rules {
         match rule {
-            RuleConfig::Direct { rule } => {
-                info!("DirectRule {rule:?}");
-                let direct = Arc::new(DirectRule::new(rule));
+            RuleConfig::Direct { rule, group } => {
+                let result = resolve_rule(rule, group.as_deref(), proxies)?;
+                info!("DirectRule {rule:?} group={group:?}");
+                let direct = Arc::new(DirectRule::new(result));
                 rules.push(direct.clone());
                 async_rules.push(direct);
             }
-            RuleConfig::IpNet { ipnet, rule } => {
-                info!("IpNetRule {ipnet} {rule:?}");
-                let ip_net = IpNetRule::new(&ipnet, rule)?;
+            RuleConfig::IpNet { ipnet, rule, group } => {
+                let result = resolve_rule(rule, group.as_deref(), proxies)?;
+                info!("IpNetRule {ipnet} {rule:?} group={group:?}");
+                let ip_net = IpNetRule::new(&ipnet, result)?;
                 let net = Arc::new(ip_net);
                 rules.push(net.clone());
                 async_rules.push(net);
             }
-            RuleConfig::DomainKeyword { keyword, rule } => {
-                info!("DomainKeyword {keyword} {rule:?}");
-                let keyword = Arc::new(DomainKeywordRule::new(keyword, rule));
+            RuleConfig::DomainKeyword {
+                keyword,
+                rule,
+                group,
+            } => {
+                let result = resolve_rule(rule, group.as_deref(), proxies)?;
+                info!("DomainKeyword {keyword} {rule:?} group={group:?}");
+                let keyword = Arc::new(DomainKeywordRule::new(keyword, result));
                 rules.push(keyword.clone());
                 async_rules.push(keyword);
             }
-            RuleConfig::DomainSuffixSet { name, file, rule } => {
+            RuleConfig::DomainSuffixSet {
+                name,
+                file,
+                rule,
+                group,
+            } => {
+                let result = resolve_rule(rule, group.as_deref(), proxies)?;
                 let ac = if let Some(ref name) = name {
-                    info!("DomainSuffixSet name: {name} {rule:?}");
+                    info!("DomainSuffixSet name: {name} {rule:?} group={group:?}");
                     ac_cache.get(name).cloned().ok_or_else(|| {
                         anyhow!("Domain set '{name}' not found in domain_sets config")
                     })?
                 } else if let Some(ref file) = file {
-                    info!("DomainSuffixSet file: {file} {rule:?}");
+                    info!("DomainSuffixSet file: {file} {rule:?} group={group:?}");
                     load_ac_from_file(file)?
                 } else {
                     return Err(anyhow!(
@@ -373,7 +435,7 @@ pub fn load_rules(config: RulesConfig) -> anyhow::Result<(AutoRules, AsyncAutoRu
                     ));
                 };
 
-                let suffix_set = DomainSuffixSetRule::new(ac, rule);
+                let suffix_set = DomainSuffixSetRule::new(ac, result);
                 let set = Arc::new(suffix_set);
                 rules.push(set.clone());
                 async_rules.push(set);
@@ -382,15 +444,17 @@ pub fn load_rules(config: RulesConfig) -> anyhow::Result<(AutoRules, AsyncAutoRu
                 name,
                 country,
                 rule,
+                group,
             } => {
+                let result = resolve_rule(rule, group.as_deref(), proxies)?;
                 let mmdb = if let Some(ref name) = name {
-                    info!("GeoIp name: {name} {country} {rule:?}");
+                    info!("GeoIp name: {name} {country} {rule:?} group={group:?}");
                     mmdb_cache
                         .get(name)
                         .cloned()
                         .ok_or_else(|| anyhow!("MMDB set '{name}' not found in mmdb_sets config"))?
                 } else {
-                    info!("GeoIp {country} {rule:?}");
+                    info!("GeoIp {country} {rule:?} group={group:?}");
                     default_mmdb.as_ref().cloned().ok_or_else(|| {
                         anyhow!(
                             "Global mmdb is not configured and no name is provided for GeoIp rule"
@@ -398,7 +462,7 @@ pub fn load_rules(config: RulesConfig) -> anyhow::Result<(AutoRules, AsyncAutoRu
                     })?
                 };
 
-                let geoip = GeoIpRule::new(mmdb, country, rule);
+                let geoip = GeoIpRule::new(mmdb, country, result);
                 async_rules.push(Arc::new(geoip));
             }
         }

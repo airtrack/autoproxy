@@ -10,12 +10,13 @@
 //! description or its buckets after its first use. With no recorder installed
 //! every call below is a no-op.
 //!
-//! Every label value comes from one of the enums in this module, so a domain,
-//! an IP or a proxy address can never become a label.
+//! Every label value comes from one of the enums in this module or
+//! [`Protocol`](crate::protocol::Protocol), so a domain, an IP or a proxy
+//! address can never become a label.
 
 use metrics::{Unit, describe_counter, describe_gauge, describe_histogram};
 
-use crate::rule::RuleResult;
+use crate::{protocol::Protocol, rule::RuleResult};
 
 /// Accepted client connections that finished, by protocol. Every connection is
 /// counted once, whether it relayed, failed to connect or was blocked.
@@ -127,22 +128,6 @@ pub fn dns_cache_lookup(result: CacheLookup) {
     metrics::counter!(DNS_CACHE_LOOKUPS, "result" => result.as_str()).increment(1);
 }
 
-/// Which listener a connection arrived on. Labels `protocol`.
-#[derive(Debug, Clone, Copy)]
-pub enum Protocol {
-    Http,
-    Socks5,
-}
-
-impl Protocol {
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Http => "http",
-            Self::Socks5 => "socks5",
-        }
-    }
-}
-
 /// How a connection, or a step of one, ended. Labels `outcome`.
 #[derive(Debug, Clone, Copy)]
 pub enum Outcome {
@@ -183,7 +168,7 @@ impl Path {
     /// the rule chain falls back to `Direct` — and maps there too.
     pub const fn of(result: RuleResult) -> Self {
         match result {
-            RuleResult::Proxy => Self::Proxy,
+            RuleResult::Proxy(_) => Self::Proxy,
             RuleResult::Block => Self::Block,
             RuleResult::Direct | RuleResult::NotFound => Self::Direct,
         }
@@ -360,6 +345,7 @@ pub fn describe_metrics() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::proxy_group::ProxyGroupId;
 
     #[test]
     fn every_described_metric_has_a_name_a_backend_can_read() {
@@ -400,7 +386,10 @@ mod tests {
 
     #[test]
     fn the_rule_fallback_is_a_direct_path() {
-        assert_eq!(Path::of(RuleResult::Proxy).as_str(), "proxy");
+        assert_eq!(
+            Path::of(RuleResult::Proxy(ProxyGroupId::new(0))).as_str(),
+            "proxy"
+        );
         assert_eq!(Path::of(RuleResult::Block).as_str(), "block");
         assert_eq!(Path::of(RuleResult::Direct).as_str(), "direct");
         assert_eq!(Path::of(RuleResult::NotFound).as_str(), "direct");
@@ -408,8 +397,6 @@ mod tests {
 
     #[test]
     fn label_values_are_lowercase_and_closed() {
-        assert_eq!(Protocol::Http.as_str(), "http");
-        assert_eq!(Protocol::Socks5.as_str(), "socks5");
         assert_eq!(Outcome::of(true).as_str(), "ok");
         assert_eq!(Outcome::of(false).as_str(), "error");
         assert_eq!(
