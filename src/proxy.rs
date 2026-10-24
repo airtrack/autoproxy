@@ -118,6 +118,27 @@ enum TargetHost {
     Ip(IpAddr),
 }
 
+/// The HTTP status a failed connect is reported with. A rule's refusal is a
+/// 403; anything else means the upstream could not be reached.
+fn http_refusal(error: &Error) -> (u16, &'static str) {
+    match error.kind() {
+        ErrorKind::PermissionDenied => (403, "blocked by a rule\n"),
+        ErrorKind::InvalidInput => (400, "invalid target\n"),
+        ErrorKind::TimedOut => (504, "upstream timed out\n"),
+        _ => (502, "upstream connect failed\n"),
+    }
+}
+
+/// The SOCKS5 reply code a failed connect is reported with (RFC 1928 section
+/// 6). A rule's refusal is the one code that means "not allowed".
+fn socks5_refusal(error: &Error) -> u8 {
+    match error.kind() {
+        ErrorKind::PermissionDenied => socks5::REP_NOT_ALLOWED,
+        ErrorKind::ConnectionRefused => socks5::REP_CONNECTION_REFUSED,
+        _ => socks5::REP_GENERAL_FAILURE,
+    }
+}
+
 async fn connect<F>(
     protocol: Protocol,
     proxies: &ProxyGroups,
@@ -153,7 +174,9 @@ where
         }
         ConnectTarget::Block => {
             trace!("block connect tcp {}", target);
-            Err(Error::new(ErrorKind::ConnectionRefused, "Blocked"))
+            // The refusal mappers turn this kind into 403 / REP_NOT_ALLOWED,
+            // so the client learns that the rules said no.
+            Err(Error::new(ErrorKind::PermissionDenied, "Blocked"))
         }
     }
 }
@@ -215,7 +238,7 @@ async fn run_http_proxy_connection(
     proxies: ProxyGroups,
 ) -> Result<()> {
     let inbound = httpproxy::accept(stream).await?;
-    let mut outbound = connect(
+    let mut outbound = match connect(
         Protocol::Http,
         &proxies,
         &rules,
@@ -224,7 +247,15 @@ async fn run_http_proxy_connection(
         inbound.host(),
         async |proxy, host| httpproxy::connect(proxy, host).await,
     )
-    .await?;
+    .await
+    {
+        Ok(outbound) => outbound,
+        Err(error) => {
+            let (status, body) = http_refusal(&error);
+            inbound.response(status, body).await.ok();
+            return Err(error);
+        }
+    };
 
     let (mut inbound, req) = inbound.response_200().await?;
     if let Some(req) = req {
@@ -269,7 +300,7 @@ async fn run_socks5_tcp_proxy(
     };
     let destination = incoming.destination().clone();
 
-    let mut outbound = connect(
+    let mut outbound = match connect(
         Protocol::Socks5,
         &proxies,
         &rules,
@@ -278,7 +309,14 @@ async fn run_socks5_tcp_proxy(
         &host,
         async |proxy, _| socks5::connect(proxy, destination).await,
     )
-    .await?;
+    .await
+    {
+        Ok(outbound) => outbound,
+        Err(error) => {
+            incoming.reply_err(socks5_refusal(&error)).await.ok();
+            return Err(error);
+        }
+    };
 
     let mut inbound = incoming.reply_ok(outbound.local_addr()?).await?;
 

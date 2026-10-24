@@ -606,8 +606,8 @@ checksum = "6dbf3de79e51f3d586ab4cb9d5c3e2c14aa28ed23d180cf89b4df0454a69cc87"
 
 [[package]]
 name = "httpproxy"
-version = "0.1.0"
-source = "git+https://github.com/airtrack/sproxy.git?tag=0.1.1#c7a63689f3372a7954c5f34e79dbff6f05dfaea9"
+version = "0.1.1"
+source = "git+https://github.com/airtrack/sproxy.git?tag=0.2.0#d861e0e9e87002d0980dd7fd17e967c74d394ac7"
 dependencies = [
  "httparse",
  "log",
@@ -1585,8 +1585,8 @@ dependencies = [
 
 [[package]]
 name = "socks5"
-version = "0.1.1"
-source = "git+https://github.com/airtrack/sproxy.git?tag=0.1.1#c7a63689f3372a7954c5f34e79dbff6f05dfaea9"
+version = "0.2.0"
+source = "git+https://github.com/airtrack/sproxy.git?tag=0.2.0#d861e0e9e87002d0980dd7fd17e967c74d394ac7"
 dependencies = [
  "tokio",
 ]
